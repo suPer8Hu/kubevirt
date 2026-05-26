@@ -67,6 +67,8 @@ import (
 	"kubevirt.io/kubevirt/pkg/service"
 	"kubevirt.io/kubevirt/pkg/util"
 	"kubevirt.io/kubevirt/pkg/util/openapi"
+
+	apiserverpoc "kubevirt.io/kubevirt/pkg/virt-api/apiserver"
 	"kubevirt.io/kubevirt/pkg/virt-api/definitions"
 	"kubevirt.io/kubevirt/pkg/virt-api/rest"
 	"kubevirt.io/kubevirt/pkg/virt-api/webhooks"
@@ -1247,6 +1249,14 @@ func (app *virtAPIApp) Run() {
 
 	go app.certmanager.Start()
 	go app.handlerCertManager.Start()
+
+	// Probe whether the k8s.io/apiserver scaffolding can be initialized inside
+	// the legacy virt-api process.
+	if bootstrapErr := apiserverpoc.TryBootstrap(); bootstrapErr != nil {
+		log.Log.Warningf("generic apiserver scaffolding bootstrap failed: %v", bootstrapErr)
+	} else {
+		log.Log.Infof("generic apiserver scaffolding bootstrap succeeded (empty APIGroups, no listener)")
+	}
 
 	// start TLS server
 	// tls server will only accept connections when fetching a certificate and internal configuration passed once
