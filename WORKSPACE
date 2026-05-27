@@ -5231,11 +5231,67 @@ gazelle_dependencies(go_sdk = "go_sdk")
 
 bazeldnf_dependencies()
 
+# Winrmcli dependencies
+go_repository(
+    name = "com_github_masterzen_winrmcli",
+    commit = "c85a68ee8b6e3ac95af2a5fd62d2f41c9e9c5f32",
+    importpath = "github.com/masterzen/winrm-cli",
+)
+
+# Winrmcp deps
+go_repository(
+    name = "com_github_packer_community_winrmcp",
+    commit = "c76d91c1e7db27b0868c5d09e292bb540616c9a2",
+    importpath = "github.com/packer-community/winrmcp",
+)
+
+go_repository(
+    name = "com_github_masterzen_winrm_cli",
+    commit = "6f0c57dee4569c04f64c44c335752b415e5d73a7",
+    importpath = "github.com/masterzen/winrm-cli",
+)
+
+go_repository(
+    name = "com_github_masterzen_winrm",
+    commit = "1d17eaf15943ca3554cdebb3b1b10aaa543a0b7e",
+    importpath = "github.com/masterzen/winrm",
+)
+
+go_repository(
+    name = "com_github_nu7hatch_gouuid",
+    commit = "179d4d0c4d8d407a32af483c2354df1d2c91e6c3",
+    importpath = "github.com/nu7hatch/gouuid",
+)
+
+go_repository(
+    name = "com_github_dylanmei_iso8601",
+    commit = "2075bf119b58e5576c6ed9f867b8f3d17f2e54d4",
+    importpath = "github.com/dylanmei/iso8601",
+)
+
+go_repository(
+    name = "com_github_gofrs_uuid",
+    commit = "abfe1881e60ef34074c1b8d8c63b42565c356ed6",
+    importpath = "github.com/gofrs/uuid",
+)
+
+go_repository(
+    name = "com_github_christrenkamp_goxpath",
+    commit = "c5096ec8773dd9f554971472081ddfbb0782334e",
+    importpath = "github.com/ChrisTrenkamp/goxpath",
+)
+
 go_repository(
     name = "com_github_azure_go_ntlmssp",
     importpath = "github.com/Azure/go-ntlmssp",
     sum = "h1:ZU22z/2YRFLyf/P4ZwUYSdNCWsMEI0VeyrFoI2rAhJQ=",
     version = "v0.0.0-20211209120228-48547f28849e",
+)
+
+go_repository(
+    name = "com_github_masterzen_simplexml",
+    commit = "31eea30827864c9ab643aa5a0d5b2d4988ec8409",
+    importpath = "github.com/masterzen/simplexml",
 )
 
 go_repository(

@@ -14,7 +14,7 @@ go_library(
     deps = [
         "//vendor/github.com/gogo/protobuf/gogoproto:go_default_library",
         "//vendor/github.com/golang/protobuf/proto:go_default_library",
-        "//vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options",
+        "//vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options:go_default_library",
         "//vendor/go.etcd.io/etcd/api/v3/authpb:go_default_library",
         "//vendor/go.etcd.io/etcd/api/v3/membershippb:go_default_library",
         "//vendor/go.etcd.io/etcd/api/v3/mvccpb:go_default_library",

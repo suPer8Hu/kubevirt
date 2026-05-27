@@ -37,7 +37,7 @@ go_library(
     importmap = "kubevirt.io/kubevirt/vendor/github.com/google/cel-go/common/types",
     importpath = "github.com/google/cel-go/common/types",
     deps = [
-        "//vendor/cel.dev/expr",
+        "//vendor/cel.dev/expr:go_default_library",
         "//vendor/github.com/google/cel-go/checker/decls:go_default_library",
         "//vendor/github.com/google/cel-go/common/overloads:go_default_library",
         "//vendor/github.com/google/cel-go/common/types/pb:go_default_library",
