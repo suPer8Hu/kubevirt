@@ -98,7 +98,7 @@ const (
 	httpStatusBadRequestMessage   = "Bad Request"
 	httpStatusInternalServerError = "Internal Server Error"
 
-	aggregatedDefaultPort       = 8443
+	aggregatedDefaultPort       = 9443
 	aggregatedSelfSignedCertDir = "/tmp/virt-api-aggregated-certs"
 )
 
@@ -1269,6 +1269,12 @@ func (app *virtAPIApp) Run() {
 // startAggregatedAPIServer brings up the
 // k8s.io/apiserver-based GenericAPIServer inside the virt-api process.
 func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Log.Warningf("aggregated API server panicked: %v", r)
+		}
+	}()
+
 	s := apiserver.New().
 		WithSecureServingPort(aggregatedDefaultPort).
 		WithSecureServingCertDirectory(aggregatedSelfSignedCertDir)
