@@ -68,7 +68,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/util"
 	"kubevirt.io/kubevirt/pkg/util/openapi"
 
-	apiserverpoc "kubevirt.io/kubevirt/pkg/virt-api/apiserver"
+	apiserver "kubevirt.io/kubevirt/pkg/virt-api/apiserver"
 	"kubevirt.io/kubevirt/pkg/virt-api/definitions"
 	"kubevirt.io/kubevirt/pkg/virt-api/rest"
 	"kubevirt.io/kubevirt/pkg/virt-api/webhooks"
@@ -97,6 +97,9 @@ const (
 	httpStatusNotFoundMessage     = "Not Found"
 	httpStatusBadRequestMessage   = "Bad Request"
 	httpStatusInternalServerError = "Internal Server Error"
+
+	aggregatedDefaultPort       = 8443
+	aggregatedSelfSignedCertDir = "/tmp/virt-api-aggregated-certs"
 )
 
 type VirtApi interface {
@@ -1250,13 +1253,9 @@ func (app *virtAPIApp) Run() {
 	go app.certmanager.Start()
 	go app.handlerCertManager.Start()
 
-	// Probe whether the k8s.io/apiserver scaffolding can be initialized inside
-	// the legacy virt-api process.
-	if bootstrapErr := apiserverpoc.TryBootstrap(); bootstrapErr != nil {
-		log.Log.Warningf("generic apiserver scaffolding bootstrap failed: %v", bootstrapErr)
-	} else {
-		log.Log.Infof("generic apiserver scaffolding bootstrap succeeded (empty APIGroups, no listener)")
-	}
+	aggregatedCtx, cancelAggregated := context.WithCancel(context.Background())
+	defer cancelAggregated()
+	go app.startAggregatedAPIServer(aggregatedCtx)
 
 	// start TLS server
 	// tls server will only accept connections when fetching a certificate and internal configuration passed once
@@ -1265,6 +1264,34 @@ func (app *virtAPIApp) Run() {
 		panic(err)
 	}
 
+}
+
+// startAggregatedAPIServer brings up the
+// k8s.io/apiserver-based GenericAPIServer inside the virt-api process.
+func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) {
+	s := apiserver.New().
+		WithSecureServingPort(aggregatedDefaultPort).
+		WithSecureServingCertDirectory(aggregatedSelfSignedCertDir)
+
+	scheme := apiserver.NewScheme()
+
+	log.Log.Infof(
+		"starting aggregated API server (GenericAPIServer) on port %d with empty APIGroups",
+		aggregatedDefaultPort,
+	)
+
+	if err := s.Run(
+		ctx,
+		"virt-api-aggregated",
+		scheme,
+		apiserver.NewOpenAPIConfig(scheme),
+		apiserver.NewOpenAPIV3Config(scheme),
+		apiserver.APIGroups{},
+	); err != nil {
+		log.Log.Warningf("aggregated API server exited with error: %v", err)
+		return
+	}
+	log.Log.Infof("aggregated API server stopped")
 }
 
 // Detects if a config has been applied that requires

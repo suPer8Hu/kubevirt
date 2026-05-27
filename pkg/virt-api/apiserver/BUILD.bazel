@@ -4,7 +4,6 @@ go_library(
     name = "go_default_library",
     srcs = [
         "apiserver.go",
-        "bootstrap.go",
         "filter.go",
         "openapi.go",
         "scheme.go",

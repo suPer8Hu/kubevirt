@@ -26,8 +26,6 @@ package apiserver
 import (
 	"context"
 	"flag"
-	"os/signal"
-	"syscall"
 
 	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -68,7 +66,18 @@ func (a *apiserver) AddFlags(fs *pflag.FlagSet) {
 	fs.AddGoFlagSet(goFs)
 }
 
+func (a *apiserver) WithSecureServingPort(port int) *apiserver {
+	a.secureServingOpts.BindPort = port
+	return a
+}
+
+func (a *apiserver) WithSecureServingCertDirectory(dir string) *apiserver {
+	a.secureServingOpts.ServerCert.CertDirectory = dir
+	return a
+}
+
 func (a *apiserver) Run(
+	ctx context.Context,
 	name string,
 	scheme *runtime.Scheme,
 	openAPIConfig *openapicommon.Config,
@@ -132,11 +141,8 @@ func (a *apiserver) Run(
 	// the existing webhook handlers on server.Handler.NonGoRestfulMux here so
 	// the same HTTPS listener handles both subresources and webhooks.
 
-	signalsCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
-
 	klog.Info("Starting aggregated API server...")
-	if err := server.PrepareRun().RunWithContext(signalsCtx); err != nil {
+	if err := server.PrepareRun().RunWithContext(ctx); err != nil {
 		klog.Errorf("Failed to run server: %v", err)
 		return err
 	}
