@@ -20,10 +20,14 @@
 package apiserver
 
 import (
+	"strings"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kube-openapi/pkg/common"
 	"k8s.io/kube-openapi/pkg/spec3"
 	"k8s.io/kube-openapi/pkg/validation/spec"
+
+	kubevirtopenapi "kubevirt.io/client-go/api"
 )
 
 var info = &spec.Info{
@@ -52,10 +56,12 @@ func NewOpenAPIConfig(scheme *runtime.Scheme) *common.Config {
 				Description: "Default Response.",
 			},
 		},
-		GetDefinitions: emptyDefinitions,
+		GetDefinitions:    getDefinitions,
+		GetDefinitionName: getDefinitionName,
 	}
 }
 
+// NewOpenAPIV3Config mirrors NewOpenAPIConfig for OpenAPI v3.
 func NewOpenAPIV3Config(scheme *runtime.Scheme) *common.OpenAPIV3Config {
 	_ = scheme
 	return &common.OpenAPIV3Config{
@@ -65,10 +71,67 @@ func NewOpenAPIV3Config(scheme *runtime.Scheme) *common.OpenAPIV3Config {
 				Description: "Default Response.",
 			},
 		},
-		GetDefinitions: emptyDefinitions,
+		GetDefinitions:    getDefinitions,
+		GetDefinitionName: getDefinitionName,
 	}
 }
 
-func emptyDefinitions(_ common.ReferenceCallback) map[string]common.OpenAPIDefinition {
-	return map[string]common.OpenAPIDefinition{}
+func getDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
+	defs := kubevirtopenapi.GetOpenAPIDefinitions(ref)
+	defs["k8s.io/apimachinery/pkg/version.Info"] = schemaVersionInfo()
+	return defs
+}
+
+func getDefinitionName(name string) (string, spec.Extensions) {
+	if strings.Contains(name, "kubevirt.io") {
+		return name[strings.LastIndex(name, "/")+1:], nil
+	}
+	return strings.ReplaceAll(name, "/", "."), nil
+}
+
+func schemaVersionInfo() common.OpenAPIDefinition {
+	stringProp := func(desc string) spec.Schema {
+		return spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: desc,
+				Type:        []string{"string"},
+				Format:      "",
+			},
+		}
+	}
+
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Info contains versioning information for an API server, as exposed on /version.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"major":                 stringProp("Major is the major version of the binary version."),
+					"minor":                 stringProp("Minor is the minor version of the binary version."),
+					"emulationMajor":        stringProp("EmulationMajor is the major version of the emulation version."),
+					"emulationMinor":        stringProp("EmulationMinor is the minor version of the emulation version."),
+					"minCompatibilityMajor": stringProp("MinCompatibilityMajor is the major version of the minimum compatibility version."),
+					"minCompatibilityMinor": stringProp("MinCompatibilityMinor is the minor version of the minimum compatibility version."),
+					"gitVersion":            stringProp("GitVersion is the git version of the binary."),
+					"gitCommit":             stringProp("GitCommit is the git commit of the binary."),
+					"gitTreeState":          stringProp("GitTreeState is the state of the git tree the binary was built from."),
+					"buildDate":             stringProp("BuildDate is the date the binary was built."),
+					"goVersion":             stringProp("GoVersion is the Go version of the binary."),
+					"compiler":              stringProp("Compiler is the Go compiler used to build the binary."),
+					"platform":              stringProp("Platform is the platform the binary was built for."),
+				},
+				Required: []string{
+					"major",
+					"minor",
+					"gitVersion",
+					"gitCommit",
+					"gitTreeState",
+					"buildDate",
+					"goVersion",
+					"compiler",
+					"platform",
+				},
+			},
+		},
+	}
 }
