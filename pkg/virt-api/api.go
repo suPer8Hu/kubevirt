@@ -29,7 +29,6 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"k8s.io/kube-openapi/pkg/validation/spec"
 
@@ -97,9 +96,6 @@ const (
 	httpStatusNotFoundMessage     = "Not Found"
 	httpStatusBadRequestMessage   = "Bad Request"
 	httpStatusInternalServerError = "Internal Server Error"
-
-	aggregatedDefaultPort       = 9443
-	aggregatedSelfSignedCertDir = "/tmp/virt-api-aggregated-certs"
 )
 
 type VirtApi interface {
@@ -1091,87 +1087,6 @@ func (app *virtAPIApp) setupTLS(k8sCAManager kvtls.KubernetesCAManager, kubevirt
 	app.handlerTLSConfiguration = kvtls.SetupTLSForVirtHandlerClients(kubevirtCAManager, app.handlerCertManager, app.externallyManaged)
 }
 
-func (app *virtAPIApp) startTLS(informerFactory controller.KubeInformerFactory) error {
-
-	errors := make(chan error)
-	c := make(chan os.Signal, 1)
-
-	signal.Notify(c, os.Interrupt,
-		syscall.SIGHUP,
-		syscall.SIGINT,
-		syscall.SIGTERM,
-		syscall.SIGQUIT,
-	)
-
-	authConfigMapInformer := informerFactory.ApiAuthConfigMap()
-	kubevirtCAConfigInformer := informerFactory.KubeVirtCAConfigMap()
-
-	k8sCAManager := kvtls.NewKubernetesClientCAManager(authConfigMapInformer.GetStore())
-	kubevirtCAInformer := kvtls.NewCAManager(kubevirtCAConfigInformer.GetStore(), app.namespace, app.caConfigMapName)
-	app.setupTLS(k8sCAManager, kubevirtCAInformer)
-
-	app.Compose()
-
-	http.Handle("/metrics", promhttp.Handler())
-	server := &http.Server{
-		Addr:      fmt.Sprintf("%s:%d", app.BindAddress, app.Port),
-		TLSConfig: app.tlsConfig,
-		// Disable HTTP/2
-		// See CVE-2023-44487
-		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
-	}
-
-	// start TLS server
-	go func() {
-		errors <- server.ListenAndServeTLS("", "")
-	}()
-
-	metrics.SetVirtAPIReady()
-
-	// start graceful shutdown handler
-	go func() {
-		select {
-		case s := <-c:
-			log.Log.Infof("Received signal %s, initiating graceful shutdown", s.String())
-		case msg := <-app.reInitChan:
-			log.Log.Infof("Received signal to reInitialize virt-api [%s], initiating graceful shutdown", msg)
-		}
-
-		metrics.SetVirtAPINotReady()
-
-		// pause briefly to ensure the load balancer has had a chance to
-		// remove this endpoint from rotation due to pod.DeletionTimestamp != nil
-		// By pausing, we reduce the chance that the load balancer will attempt to
-		// route new requests to the service after we've started the shutdown
-		// procedure
-		time.Sleep(5 * time.Second)
-
-		// by default, server.Shutdown() waits indefinitely for all existing
-		// connections to close. We need to give this a timeout to ensure the
-		// shutdown will eventually complete.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer func() {
-			cancel()
-		}()
-
-		// Shutdown means new connections are not permitted and it waits for existing
-		// connections to terminate (up to the context timeout)
-		server.Shutdown(ctx)
-		// Shutdown forces any existing connections that persist after the shutdown
-		// times out to be forced closed.
-		server.Close()
-	}()
-
-	// wait for server to exit
-	err := <-errors
-
-	if err != nil && err != http.ErrServerClosed {
-		// ErrServerClosed is an expected error during normal shutdown
-		return err
-	}
-	return nil
-}
-
 func (app *virtAPIApp) Run() {
 	host, err := os.Hostname()
 	if err != nil {
@@ -1253,51 +1168,116 @@ func (app *virtAPIApp) Run() {
 	go app.certmanager.Start()
 	go app.handlerCertManager.Start()
 
-	aggregatedCtx, cancelAggregated := context.WithCancel(context.Background())
-	defer cancelAggregated()
-	go app.startAggregatedAPIServer(aggregatedCtx)
+	// Register the legacy serving surface on
+	// http.DefaultServeMux without starting its own listener.
+	app.prepareLegacyHandlers(kubeInformerFactory)
 
-	// start TLS server
-	// tls server will only accept connections when fetching a certificate and internal configuration passed once
-	err = app.startTLS(kubeInformerFactory)
-	if err != nil {
+	ctx := app.signalAwareContext()
+	if err := app.startAggregatedAPIServer(ctx); err != nil && err != http.ErrServerClosed {
 		panic(err)
 	}
-
 }
 
-// startAggregatedAPIServer brings up the
-// k8s.io/apiserver-based GenericAPIServer inside the virt-api process.
-func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Log.Warningf("aggregated API server panicked: %v", r)
+func (app *virtAPIApp) prepareLegacyHandlers(informerFactory controller.KubeInformerFactory) {
+	authConfigMapInformer := informerFactory.ApiAuthConfigMap()
+	kubevirtCAConfigInformer := informerFactory.KubeVirtCAConfigMap()
+
+	k8sCAManager := kvtls.NewKubernetesClientCAManager(authConfigMapInformer.GetStore())
+	kubevirtCAInformer := kvtls.NewCAManager(kubevirtCAConfigInformer.GetStore(), app.namespace, app.caConfigMapName)
+	app.setupTLS(k8sCAManager, kubevirtCAInformer)
+
+	app.Compose()
+
+	http.Handle("/metrics", promhttp.Handler())
+
+	metrics.SetVirtAPIReady()
+}
+
+func (app *virtAPIApp) signalAwareContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT,
+	)
+
+	go func() {
+		select {
+		case s := <-c:
+			log.Log.Infof("Received signal %s, initiating graceful shutdown", s.String())
+		case msg := <-app.reInitChan:
+			log.Log.Infof("Received signal to reInitialize virt-api [%s], initiating graceful shutdown", msg)
 		}
+		metrics.SetVirtAPINotReady()
+		cancel()
 	}()
 
+	return ctx
+}
+
+func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 	s := apiserver.New().
-		WithSecureServingPort(aggregatedDefaultPort).
-		WithSecureServingCertDirectory(aggregatedSelfSignedCertDir)
+		WithSecureServingPort(app.Port).
+		WithSecureServingCert(app.tlsCertFilePath, app.tlsKeyFilePath).
+		WithFallbackHandler(http.DefaultServeMux).
+		WithAlwaysAllowPaths(legacyBridgeAlwaysAllowPaths()...)
 
 	scheme := apiserver.NewScheme()
 
 	log.Log.Infof(
-		"starting aggregated API server (GenericAPIServer) on port %d with empty APIGroups",
-		aggregatedDefaultPort,
+		"starting aggregated API server (GenericAPIServer) on port %d as the single virt-api listener",
+		app.Port,
 	)
 
-	if err := s.Run(
+	return s.Run(
 		ctx,
 		"virt-api-aggregated",
 		scheme,
 		apiserver.NewOpenAPIConfig(scheme),
 		apiserver.NewOpenAPIV3Config(scheme),
 		apiserver.APIGroups{},
-	); err != nil {
-		log.Log.Warningf("aggregated API server exited with error: %v", err)
-		return
+	)
+}
+
+func legacyBridgeAlwaysAllowPaths() []string {
+	return []string{
+		// Aggregated subresource API group.
+		"/apis/subresources.kubevirt.io/*",
+		"/metrics",
+
+		// Mutating webhooks.
+		components.VMMutatePath,
+		components.VMIMutatePath,
+		components.MigrationMutatePath,
+		components.VMCloneCreateMutatePath,
+		components.VirtLauncherPodMutatePath,
+
+		// Validating webhooks.
+		components.VMICreateValidatePath,
+		components.VMIUpdateValidatePath,
+		components.VMValidatePath,
+		components.VMIRSValidatePath,
+		components.VMPoolValidatePath,
+		components.VMIPresetValidatePath,
+		components.MigrationCreateValidatePath,
+		components.MigrationUpdateValidatePath,
+		components.VMSnapshotValidatePath,
+		components.VMRestoreValidatePath,
+		components.VMBackupValidatePath,
+		components.VMBackupTrackerValidatePath,
+		components.VMExportValidatePath,
+		components.VMInstancetypeValidatePath,
+		components.VMClusterInstancetypeValidatePath,
+		components.VMPreferenceValidatePath,
+		components.VMClusterPreferenceValidatePath,
+		components.StatusValidatePath,
+		components.PodEvictionValidatePath,
+		components.MigrationPolicyCreateValidatePath,
+		components.VMCloneCreateValidatePath,
 	}
-	log.Log.Infof("aggregated API server stopped")
 }
 
 // Detects if a config has been applied that requires

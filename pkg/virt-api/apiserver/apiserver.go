@@ -26,6 +26,7 @@ package apiserver
 import (
 	"context"
 	"flag"
+	"net/http"
 
 	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,6 +46,9 @@ type (
 		secureServingOpts *options.SecureServingOptionsWithLoopback
 		authnOpts         *options.DelegatingAuthenticationOptions
 		authzOpts         *options.DelegatingAuthorizationOptions
+
+		fallbackHandler       http.Handler
+		extraAlwaysAllowPaths []string
 	}
 )
 
@@ -76,6 +80,22 @@ func (a *apiserver) WithSecureServingCertDirectory(dir string) *apiserver {
 	return a
 }
 
+func (a *apiserver) WithFallbackHandler(h http.Handler) *apiserver {
+	a.fallbackHandler = h
+	return a
+}
+
+func (a *apiserver) WithAlwaysAllowPaths(paths ...string) *apiserver {
+	a.extraAlwaysAllowPaths = append(a.extraAlwaysAllowPaths, paths...)
+	return a
+}
+
+func (a *apiserver) WithSecureServingCert(certFile, keyFile string) *apiserver {
+	a.secureServingOpts.ServerCert.CertKey.CertFile = certFile
+	a.secureServingOpts.ServerCert.CertKey.KeyFile = keyFile
+	return a
+}
+
 func (a *apiserver) Run(
 	ctx context.Context,
 	name string,
@@ -97,6 +117,9 @@ func (a *apiserver) Run(
 	)
 	a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths,
 		getAdditionalAlwaysAllowPaths(apiGroups)...,
+	)
+	a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths,
+		a.extraAlwaysAllowPaths...,
 	)
 
 	if err := a.secureServingOpts.ApplyTo(&config.SecureServing, &config.LoopbackClientConfig); err != nil {
@@ -136,10 +159,9 @@ func (a *apiserver) Run(
 		}
 	}
 
-	// TODO(virt-api migration): KubeVirt's virt-api also serves admission
-	// webhooks (Validating/Mutating). Once the bootstrap is verified, register
-	// the existing webhook handlers on server.Handler.NonGoRestfulMux here so
-	// the same HTTPS listener handles both subresources and webhooks.
+	if a.fallbackHandler != nil {
+		server.Handler.NonGoRestfulMux.NotFoundHandler(a.fallbackHandler)
+	}
 
 	klog.Info("Starting aggregated API server...")
 	if err := server.PrepareRun().RunWithContext(ctx); err != nil {
