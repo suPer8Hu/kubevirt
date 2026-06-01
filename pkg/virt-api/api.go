@@ -1199,7 +1199,7 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 		WithSecureServingPort(app.Port).
 		WithSecureServingCert(app.tlsCertFilePath, app.tlsKeyFilePath).
 		WithFallbackHandler(http.DefaultServeMux).
-		WithAlwaysAllowPaths(legacyBridgeAlwaysAllowPaths()...)
+		WithBridgePaths(legacyBridgePaths()...)
 
 	scheme := apiserver.NewScheme()
 
@@ -1218,7 +1218,7 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 	)
 }
 
-func legacyBridgeAlwaysAllowPaths() []string {
+func legacyBridgePaths() []string {
 	return []string{
 		// Aggregated subresource API group.
 		"/apis/subresources.kubevirt.io/*",
