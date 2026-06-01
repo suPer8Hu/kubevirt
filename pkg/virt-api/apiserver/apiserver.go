@@ -27,6 +27,7 @@ import (
 	"context"
 	"flag"
 	"net/http"
+	"strings"
 
 	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,8 +48,8 @@ type (
 		authnOpts         *options.DelegatingAuthenticationOptions
 		authzOpts         *options.DelegatingAuthorizationOptions
 
-		fallbackHandler       http.Handler
-		extraAlwaysAllowPaths []string
+		fallbackHandler http.Handler
+		bridgePaths     []string
 	}
 )
 
@@ -85,8 +86,8 @@ func (a *apiserver) WithFallbackHandler(h http.Handler) *apiserver {
 	return a
 }
 
-func (a *apiserver) WithAlwaysAllowPaths(paths ...string) *apiserver {
-	a.extraAlwaysAllowPaths = append(a.extraAlwaysAllowPaths, paths...)
+func (a *apiserver) WithBridgePaths(paths ...string) *apiserver {
+	a.bridgePaths = append(a.bridgePaths, paths...)
 	return a
 }
 
@@ -118,9 +119,23 @@ func (a *apiserver) Run(
 	a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths,
 		getAdditionalAlwaysAllowPaths(apiGroups)...,
 	)
-	a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths,
-		a.extraAlwaysAllowPaths...,
-	)
+	if a.fallbackHandler != nil && len(a.bridgePaths) > 0 {
+		matchesBridgePath := newPathMatcher(a.bridgePaths)
+		base := config.BuildHandlerChainFunc
+		if base == nil {
+			base = genericapiserver.DefaultBuildHandlerChain
+		}
+		config.BuildHandlerChainFunc = func(apiHandler http.Handler, c *genericapiserver.Config) http.Handler {
+			secured := base(apiHandler, c)
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if matchesBridgePath(r.URL.Path) {
+					apiHandler.ServeHTTP(w, r)
+					return
+				}
+				secured.ServeHTTP(w, r)
+			})
+		}
+	}
 
 	if err := a.secureServingOpts.ApplyTo(&config.SecureServing, &config.LoopbackClientConfig); err != nil {
 		klog.Errorf("Failed to apply secure serving options: %v", err)
@@ -170,6 +185,29 @@ func (a *apiserver) Run(
 	}
 
 	return nil
+}
+
+func newPathMatcher(paths []string) func(string) bool {
+	exact := make(map[string]struct{}, len(paths))
+	var prefixes []string
+	for _, p := range paths {
+		if strings.HasSuffix(p, "*") {
+			prefixes = append(prefixes, strings.TrimSuffix(p, "*"))
+		} else {
+			exact[p] = struct{}{}
+		}
+	}
+	return func(path string) bool {
+		if _, ok := exact[path]; ok {
+			return true
+		}
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(path, prefix) {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 func getAdditionalAlwaysAllowPaths(apiGroups APIGroups) []string {
