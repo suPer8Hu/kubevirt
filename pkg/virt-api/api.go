@@ -1253,6 +1253,9 @@ func legacyBridgePaths() []string {
 		components.PodEvictionValidatePath,
 		components.MigrationPolicyCreateValidatePath,
 		components.VMCloneCreateValidatePath,
+
+		components.KubeVirtUpdateValidatePath,
+		components.KubeVirtCreateValidatePath,
 	}
 }
 
