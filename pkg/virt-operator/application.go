@@ -422,7 +422,7 @@ func (app *VirtOperatorApp) Run() {
 	}
 
 	var mux http.ServeMux
-	mux.HandleFunc("/kubevirt-validate-delete", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(components.KubeVirtDeleteValidatePath, func(w http.ResponseWriter, r *http.Request) {
 		validating_webhooks.Serve(w, r, operator_webhooks.NewKubeVirtDeletionAdmitter(app.clientSet))
 	})
 	mux.HandleFunc(components.KubeVirtUpdateValidatePath, func(w http.ResponseWriter, r *http.Request) {
