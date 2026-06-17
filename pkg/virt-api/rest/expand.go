@@ -85,19 +85,6 @@ func (app *SubresourceAPIApp) ExpandSpecRequestHandler(request *restful.Request,
 	}, response)
 }
 
-func (app *SubresourceAPIApp) ExpandSpecVMRequestHandler(request *restful.Request, response *restful.Response) {
-	name := request.PathParameter("name")
-	namespace := request.PathParameter("namespace")
-
-	vm, statusErr := app.fetchVirtualMachine(name, namespace)
-	if statusErr != nil {
-		writeError(statusErr, response)
-		return
-	}
-
-	app.expandSpecResponse(vm, errors.NewInternalError, response)
-}
-
 func (app *SubresourceAPIApp) expandSpecResponse(vm *v1.VirtualMachine, errorFunc func(error) *errors.StatusError, response *restful.Response) {
 	expandedVM, err := app.instancetypeExpander.Expand(vm)
 	if err != nil {

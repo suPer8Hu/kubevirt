@@ -21,6 +21,7 @@ go_library(
         "//pkg/util/ratelimiter:go_default_library",
         "//pkg/util/tls:go_default_library",
         "//pkg/virt-api/apiserver:go_default_library",
+        "//pkg/virt-api/apiserver/storage/virtualmachine:go_default_library",
         "//pkg/virt-api/definitions:go_default_library",
         "//pkg/virt-api/rest:go_default_library",
         "//pkg/virt-api/webhooks:go_default_library",

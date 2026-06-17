@@ -51,17 +51,24 @@ type VirtualMachineExpansion interface {
 }
 
 func (c *virtualMachines) GetWithExpandedSpec(ctx context.Context, name string) (*v1.VirtualMachine, error) {
-	newVm := &v1.VirtualMachine{}
-	err := c.GetClient().Get().
+	body, err := c.GetClient().Get().
 		AbsPath(fmt.Sprintf(vmSubresourceURLFmt, v1.ApiStorageVersion)).
 		Namespace(c.GetNamespace()).
 		Resource("virtualmachines").
 		Name(name).
 		SubResource("expand-spec").
 		Do(ctx).
-		Into(newVm)
+		Raw()
+	if err != nil {
+		return nil, err
+	}
+
+	newVm := &v1.VirtualMachine{}
+	if err := json.Unmarshal(body, newVm); err != nil {
+		return nil, err
+	}
 	newVm.SetGroupVersionKind(v1.VirtualMachineGroupVersionKind)
-	return newVm, err
+	return newVm, nil
 }
 
 func (c *virtualMachines) PatchStatus(ctx context.Context, name string, pt types.PatchType, data []byte, patchOptions metav1.PatchOptions) (*v1.VirtualMachine, error) {

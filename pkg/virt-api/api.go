@@ -68,6 +68,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/util/openapi"
 
 	apiserver "kubevirt.io/kubevirt/pkg/virt-api/apiserver"
+	"kubevirt.io/kubevirt/pkg/virt-api/apiserver/storage/virtualmachine"
 	"kubevirt.io/kubevirt/pkg/virt-api/definitions"
 	"kubevirt.io/kubevirt/pkg/virt-api/rest"
 	"kubevirt.io/kubevirt/pkg/virt-api/webhooks"
@@ -279,16 +280,6 @@ func (app *virtAPIApp) composeSubresources() {
 			Returns(http.StatusBadRequest, httpStatusBadRequestMessage, "")
 		stopRouteBuilder.ParameterNamed("body").Required(false)
 		subws.Route(stopRouteBuilder)
-
-		subws.Route(subws.GET(definitions.NamespacedResourcePath(subresourcesvmGVR)+definitions.SubResourcePath("expand-spec")).
-			To(subresourceApp.ExpandSpecVMRequestHandler).
-			Param(definitions.NamespaceParam(subws)).Param(definitions.NameParam(subws)).
-			Operation(version.Version+"vm-ExpandSpec").
-			Produces(restful.MIME_JSON).
-			Doc("Get VirtualMachine object with expanded instancetype and preference.").
-			Returns(http.StatusOK, "OK", "").
-			Returns(http.StatusNotFound, httpStatusNotFoundMessage, "").
-			Returns(http.StatusInternalServerError, httpStatusInternalServerError, ""))
 
 		subws.Route(subws.PUT(definitions.NamespacedResourcePath(subresourcesvmiGVR)+definitions.SubResourcePath("freeze")).
 			To(subresourceApp.FreezeVMIRequestHandler).
@@ -1199,9 +1190,15 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 		WithSecureServingPort(app.Port).
 		WithSecureServingCert(app.tlsCertFilePath, app.tlsKeyFilePath).
 		WithFallbackHandler(http.DefaultServeMux).
-		WithBridgePaths(legacyBridgePaths()...)
+		WithBridgePaths(legacyBridgePaths()...).
+		WithBridgeExcludePaths(migratedSubresourcePaths()...)
 
 	scheme := apiserver.NewScheme()
+
+	vmStorage := virtualmachine.NewStorageMap(app.virtCli, app.clusterConfig)
+	apiGroups := apiserver.APIGroups{
+		v1.SubresourceStorageGroupVersion: vmStorage,
+	}
 
 	log.Log.Infof(
 		"starting aggregated API server (GenericAPIServer) on port %d as the single virt-api listener",
@@ -1214,8 +1211,17 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 		scheme,
 		apiserver.NewOpenAPIConfig(scheme),
 		apiserver.NewOpenAPIV3Config(scheme),
-		apiserver.APIGroups{},
+		apiGroups,
 	)
+}
+
+// Thislists the subresource paths that have been migrated to
+// the aggregated API server's rest.Storage. Bypass the legacy bridge so
+// they are served through the secured handler chain.
+func migratedSubresourcePaths() []string {
+	return []string{
+		"/apis/subresources.kubevirt.io/v1/namespaces/*/virtualmachines/*/expand-spec",
+	}
 }
 
 func legacyBridgePaths() []string {
