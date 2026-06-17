@@ -48,8 +48,9 @@ type (
 		authnOpts         *options.DelegatingAuthenticationOptions
 		authzOpts         *options.DelegatingAuthorizationOptions
 
-		fallbackHandler http.Handler
-		bridgePaths     []string
+		fallbackHandler    http.Handler
+		bridgePaths        []string
+		bridgeExcludePaths []string
 	}
 )
 
@@ -91,6 +92,11 @@ func (a *apiserver) WithBridgePaths(paths ...string) *apiserver {
 	return a
 }
 
+func (a *apiserver) WithBridgeExcludePaths(patterns ...string) *apiserver {
+	a.bridgeExcludePaths = append(a.bridgeExcludePaths, patterns...)
+	return a
+}
+
 func (a *apiserver) WithSecureServingCert(certFile, keyFile string) *apiserver {
 	a.secureServingOpts.ServerCert.CertKey.CertFile = certFile
 	a.secureServingOpts.ServerCert.CertKey.KeyFile = keyFile
@@ -121,6 +127,7 @@ func (a *apiserver) Run(
 	)
 	if a.fallbackHandler != nil && len(a.bridgePaths) > 0 {
 		matchesBridgePath := newPathMatcher(a.bridgePaths)
+		matchesExcludePath := newSegmentMatcher(a.bridgeExcludePaths)
 		base := config.BuildHandlerChainFunc
 		if base == nil {
 			base = genericapiserver.DefaultBuildHandlerChain
@@ -128,8 +135,8 @@ func (a *apiserver) Run(
 		config.BuildHandlerChainFunc = func(apiHandler http.Handler, c *genericapiserver.Config) http.Handler {
 			secured := base(apiHandler, c)
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if matchesBridgePath(r.URL.Path) {
-					apiHandler.ServeHTTP(w, r)
+				if matchesBridgePath(r.URL.Path) && !matchesExcludePath(r.URL.Path) {
+					a.fallbackHandler.ServeHTTP(w, r)
 					return
 				}
 				secured.ServeHTTP(w, r)
@@ -156,15 +163,17 @@ func (a *apiserver) Run(
 		return err
 	}
 
-	for gv, resourcesStorage := range apiGroups {
-		groupInfo := genericapiserver.NewDefaultAPIGroupInfo(
-			gv.Group, scheme, runtime.NewParameterCodec(scheme), factory,
-		)
-		groupInfo.VersionedResourcesStorageMap[gv.Version] = resourcesStorage
-		if err := server.InstallAPIGroup(&groupInfo); err != nil {
+	// A single API group may expose multiple versions
+	// InstallAPIGroup must be called once per group with all
+	// its versions merged, so build merged APIGroupInfos first.
+	for _, groupInfo := range buildAPIGroupInfos(apiGroups, scheme, factory) {
+		gi := groupInfo
+		if err := server.InstallAPIGroup(&gi); err != nil {
 			klog.Errorf("Failed to install APIGroup: %v", err)
 			return err
 		}
+	}
+	for gv, resourcesStorage := range apiGroups {
 		resourcesToHide := getParentResourceNames(resourcesStorage)
 		if len(resourcesToHide) > 0 {
 			klog.Infof("Hiding parent resources from APIResourceList: %v", resourcesToHide)
@@ -185,6 +194,54 @@ func (a *apiserver) Run(
 	}
 
 	return nil
+}
+
+// buildAPIGroupInfos merges all versions of the same API group into a single
+// APIGroupInfo, so each group is installed exactly once with every version it
+// exposes.
+func buildAPIGroupInfos(
+	apiGroups APIGroups, scheme *runtime.Scheme, factory serializer.CodecFactory,
+) map[string]genericapiserver.APIGroupInfo {
+	result := map[string]genericapiserver.APIGroupInfo{}
+	for gv, storage := range apiGroups {
+		gi, ok := result[gv.Group]
+		if !ok {
+			gi = genericapiserver.NewDefaultAPIGroupInfo(
+				gv.Group, scheme, runtime.NewParameterCodec(scheme), factory,
+			)
+		}
+		gi.VersionedResourcesStorageMap[gv.Version] = storage
+		result[gv.Group] = gi
+	}
+	return result
+}
+
+// This is used to express dynamic paths such as
+// "/apis/group/*/namespaces/*/virtualmachines/*/expand-spec".
+func newSegmentMatcher(patterns []string) func(string) bool {
+	compiled := make([][]string, 0, len(patterns))
+	for _, p := range patterns {
+		compiled = append(compiled, strings.Split(strings.Trim(p, "/"), "/"))
+	}
+	return func(path string) bool {
+		segments := strings.Split(strings.Trim(path, "/"), "/")
+		for _, pattern := range compiled {
+			if len(pattern) != len(segments) {
+				continue
+			}
+			matched := true
+			for i := range pattern {
+				if pattern[i] != "*" && pattern[i] != segments[i] {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 func newPathMatcher(paths []string) func(string) bool {
