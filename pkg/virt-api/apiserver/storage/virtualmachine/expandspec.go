@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 
@@ -63,6 +64,7 @@ func NewExpandSpecREST(virtClient kubecli.KubevirtClient, clusterConfig *virtcon
 var (
 	_ = rest.Storage(&ExpandSpecREST{})
 	_ = rest.Getter(&ExpandSpecREST{})
+	_ = rest.GroupVersionKindProvider(&ExpandSpecREST{})
 )
 
 func (r *ExpandSpecREST) New() runtime.Object {
@@ -70,6 +72,15 @@ func (r *ExpandSpecREST) New() runtime.Object {
 }
 
 func (r *ExpandSpecREST) Destroy() {}
+
+// GroupVersionKind makes the aggregated API server encode the expand-spec
+// response as kubevirt.io/v1 VirtualMachine, matching the apiVersion the
+// legacy go-restful handler returned instead of the serving group
+// subresources.kubevirt.io/v1. This keeps existing clients working, they can
+// decode the response with their kubevirt.io/v1 scheme without any change.
+func (r *ExpandSpecREST) GroupVersionKind(schema.GroupVersion) schema.GroupVersionKind {
+	return v1.VirtualMachineGroupVersionKind
+}
 
 func (r *ExpandSpecREST) Get(ctx context.Context, name string, _ *metav1.GetOptions) (runtime.Object, error) {
 	namespace, ok := request.NamespaceFrom(ctx)

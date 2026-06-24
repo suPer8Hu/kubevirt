@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	apiopenapi "k8s.io/apiserver/pkg/endpoints/openapi"
 	"k8s.io/kube-openapi/pkg/common"
 	"k8s.io/kube-openapi/pkg/spec3"
 	"k8s.io/kube-openapi/pkg/validation/spec"
@@ -56,8 +57,13 @@ func NewOpenAPIConfig(scheme *runtime.Scheme) *common.Config {
 				Description: "Default Response.",
 			},
 		},
-		GetDefinitions:    getDefinitions,
-		GetDefinitionName: getDefinitionName,
+		// GetOperationIDAndTags derives the OpenAPI operation ID from the
+		// serving group/version in the request path, so the same subresource
+		// served under both subresources.kubevirt.io/v1 and /v1alpha3 gets
+		// distinct operation IDs. Without it would see duplicate IDs and crash
+		GetOperationIDAndTags: apiopenapi.GetOperationIDAndTags,
+		GetDefinitions:        getDefinitions,
+		GetDefinitionName:     getDefinitionName,
 	}
 }
 
@@ -71,8 +77,9 @@ func NewOpenAPIV3Config(scheme *runtime.Scheme) *common.OpenAPIV3Config {
 				Description: "Default Response.",
 			},
 		},
-		GetDefinitions:    getDefinitions,
-		GetDefinitionName: getDefinitionName,
+		GetOperationIDAndTags: apiopenapi.GetOperationIDAndTags,
+		GetDefinitions:        getDefinitions,
+		GetDefinitionName:     getDefinitionName,
 	}
 }
 

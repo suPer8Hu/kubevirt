@@ -1194,9 +1194,10 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 
 	scheme := apiserver.NewScheme()
 
-	vmStorage := virtualmachine.NewStorageMap(app.virtCli, app.clusterConfig)
-	apiGroups := apiserver.APIGroups{
-		v1.SubresourceStorageGroupVersion: vmStorage,
+	// Register each version gets its own storage instances.
+	apiGroups := apiserver.APIGroups{}
+	for _, gv := range v1.SubresourceGroupVersions {
+		apiGroups[gv] = virtualmachine.NewStorageMap(app.virtCli, app.clusterConfig)
 	}
 
 	log.Log.Infof(
