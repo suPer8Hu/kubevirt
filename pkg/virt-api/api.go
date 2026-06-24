@@ -1190,8 +1190,7 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 		WithSecureServingPort(app.Port).
 		WithSecureServingCert(app.tlsCertFilePath, app.tlsKeyFilePath).
 		WithFallbackHandler(http.DefaultServeMux).
-		WithBridgePaths(legacyBridgePaths()...).
-		WithBridgeExcludePaths(migratedSubresourcePaths()...)
+		WithBridgePaths(legacyBridgePaths()...)
 
 	scheme := apiserver.NewScheme()
 
@@ -1215,19 +1214,8 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 	)
 }
 
-// Thislists the subresource paths that have been migrated to
-// the aggregated API server's rest.Storage. Bypass the legacy bridge so
-// they are served through the secured handler chain.
-func migratedSubresourcePaths() []string {
-	return []string{
-		"/apis/subresources.kubevirt.io/v1/namespaces/*/virtualmachines/*/expand-spec",
-	}
-}
-
 func legacyBridgePaths() []string {
 	return []string{
-		// Aggregated subresource API group.
-		"/apis/subresources.kubevirt.io/*",
 		"/metrics",
 
 		// Mutating webhooks.

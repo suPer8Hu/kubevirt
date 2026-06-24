@@ -48,9 +48,8 @@ type (
 		authnOpts         *options.DelegatingAuthenticationOptions
 		authzOpts         *options.DelegatingAuthorizationOptions
 
-		fallbackHandler    http.Handler
-		bridgePaths        []string
-		bridgeExcludePaths []string
+		fallbackHandler http.Handler
+		bridgePaths     []string
 	}
 )
 
@@ -92,11 +91,6 @@ func (a *apiserver) WithBridgePaths(paths ...string) *apiserver {
 	return a
 }
 
-func (a *apiserver) WithBridgeExcludePaths(patterns ...string) *apiserver {
-	a.bridgeExcludePaths = append(a.bridgeExcludePaths, patterns...)
-	return a
-}
-
 func (a *apiserver) WithSecureServingCert(certFile, keyFile string) *apiserver {
 	a.secureServingOpts.ServerCert.CertKey.CertFile = certFile
 	a.secureServingOpts.ServerCert.CertKey.KeyFile = keyFile
@@ -127,7 +121,6 @@ func (a *apiserver) Run(
 	)
 	if a.fallbackHandler != nil && len(a.bridgePaths) > 0 {
 		matchesBridgePath := newPathMatcher(a.bridgePaths)
-		matchesExcludePath := newSegmentMatcher(a.bridgeExcludePaths)
 		base := config.BuildHandlerChainFunc
 		if base == nil {
 			base = genericapiserver.DefaultBuildHandlerChain
@@ -135,7 +128,7 @@ func (a *apiserver) Run(
 		config.BuildHandlerChainFunc = func(apiHandler http.Handler, c *genericapiserver.Config) http.Handler {
 			secured := base(apiHandler, c)
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if matchesBridgePath(r.URL.Path) && !matchesExcludePath(r.URL.Path) {
+				if matchesBridgePath(r.URL.Path) {
 					a.fallbackHandler.ServeHTTP(w, r)
 					return
 				}
@@ -214,34 +207,6 @@ func buildAPIGroupInfos(
 		result[gv.Group] = gi
 	}
 	return result
-}
-
-// This is used to express dynamic paths such as
-// "/apis/group/*/namespaces/*/virtualmachines/*/expand-spec".
-func newSegmentMatcher(patterns []string) func(string) bool {
-	compiled := make([][]string, 0, len(patterns))
-	for _, p := range patterns {
-		compiled = append(compiled, strings.Split(strings.Trim(p, "/"), "/"))
-	}
-	return func(path string) bool {
-		segments := strings.Split(strings.Trim(path, "/"), "/")
-		for _, pattern := range compiled {
-			if len(pattern) != len(segments) {
-				continue
-			}
-			matched := true
-			for i := range pattern {
-				if pattern[i] != "*" && pattern[i] != segments[i] {
-					matched = false
-					break
-				}
-			}
-			if matched {
-				return true
-			}
-		}
-		return false
-	}
 }
 
 func newPathMatcher(paths []string) func(string) bool {
