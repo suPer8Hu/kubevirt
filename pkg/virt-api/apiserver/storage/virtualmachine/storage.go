@@ -24,6 +24,7 @@ import (
 
 	"kubevirt.io/client-go/kubecli"
 
+	"kubevirt.io/kubevirt/pkg/virt-api/lifecycle"
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
 )
 
@@ -31,5 +32,6 @@ func NewStorageMap(virtClient kubecli.KubevirtClient, clusterConfig *virtconfig.
 	return map[string]rest.Storage{
 		"virtualmachines":             NewDummyREST(),
 		"virtualmachines/expand-spec": NewExpandSpecREST(virtClient, clusterConfig),
+		"virtualmachines/start":       NewStartREST(lifecycle.NewHandler(virtClient)),
 	}
 }

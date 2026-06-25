@@ -424,21 +424,20 @@ var _ = Describe("Instancetype expansion subresources", func() {
 
 	Context("VirtualMachine expand-spec endpoint", func() {
 		callExpandSpecApi := func(vm *v1.VirtualMachine) *httptest.ResponseRecorder {
-			request.PathParameters()["name"] = vmName
-			request.PathParameters()["namespace"] = vmNamespace
-
 			vmClient.EXPECT().Get(context.Background(), vmName, gomock.Any()).Return(vm, nil).AnyTimes()
 
-			app.ExpandSpecVMRequestHandler(request, response)
+			fetchedVM, statusErr := app.fetchVirtualMachine(vmName, vmNamespace)
+			if statusErr != nil {
+				writeError(statusErr, response)
+				return recorder
+			}
+			app.expandSpecResponse(fetchedVM, errors.NewInternalError, response)
 			return recorder
 		}
 
 		testCommonFunctionality(callExpandSpecApi, http.StatusInternalServerError)
 
 		It("should fail if VM does not exist", func() {
-			request.PathParameters()["name"] = "nonexistent-vm"
-			request.PathParameters()["namespace"] = vmNamespace
-
 			vmClient.EXPECT().Get(context.Background(), gomock.Any(), gomock.Any()).Return(nil, errors.NewNotFound(
 				schema.GroupResource{
 					Group:    kubevirtcore.GroupName,
@@ -447,9 +446,11 @@ var _ = Describe("Instancetype expansion subresources", func() {
 				"",
 			)).AnyTimes()
 
-			app.ExpandSpecVMRequestHandler(request, response)
-			statusErr := ExpectStatusErrorWithCode(recorder, http.StatusNotFound)
-			Expect(statusErr.Status().Message).To(Equal("virtualmachine.kubevirt.io \"nonexistent-vm\" not found"))
+			_, statusErr := app.fetchVirtualMachine("nonexistent-vm", vmNamespace)
+			writeError(statusErr, response)
+
+			expandErr := ExpectStatusErrorWithCode(recorder, http.StatusNotFound)
+			Expect(expandErr.Status().Message).To(Equal("virtualmachine.kubevirt.io \"nonexistent-vm\" not found"))
 		})
 	})
 

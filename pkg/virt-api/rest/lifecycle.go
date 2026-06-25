@@ -41,121 +41,24 @@ import (
 	"kubevirt.io/kubevirt/pkg/apimachinery/patch"
 	"kubevirt.io/kubevirt/pkg/controller"
 	"kubevirt.io/kubevirt/pkg/pointer"
+	"kubevirt.io/kubevirt/pkg/virt-api/lifecycle"
 )
 
 func (app *SubresourceAPIApp) StartVMRequestHandler(request *restful.Request, response *restful.Response) {
 	name := request.PathParameter("name")
 	namespace := request.PathParameter("namespace")
 
-	vm, statusErr := app.fetchVirtualMachine(name, namespace)
-	if statusErr != nil {
-		writeError(statusErr, response)
-		return
-	}
-
-	vmi, err := app.virtCli.VirtualMachineInstance(namespace).Get(context.Background(), name, metav1.GetOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		writeError(errors.NewInternalError(err), response)
-		return
-	}
-
-	if vmi != nil && !vmi.IsFinal() && vmi.Status.Phase != v1.Unknown && vmi.Status.Phase != v1.VmPhaseUnset {
-		writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf("VM is already running")), response)
-		return
-	}
-	if controller.NewVirtualMachineConditionManager().HasConditionWithStatus(vm, v1.VirtualMachineManualRecoveryRequired, k8sv1.ConditionTrue) {
-		writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(volumeMigrationManualRecoveryRequiredErr)), response)
-		return
-	}
-
-	startPaused := false
-	startChangeRequestData := make(map[string]string)
-	bodyStruct := &v1.StartOptions{}
+	startOptions := &v1.StartOptions{}
 	if request.Request.Body != nil {
-		if err := decodeBody(request, bodyStruct); err != nil {
+		if err := decodeBody(request, startOptions); err != nil {
 			writeError(err, response)
 			return
 		}
-		startPaused = bodyStruct.Paused
-	}
-	if startPaused {
-		startChangeRequestData[v1.StartRequestDataPausedKey] = v1.StartRequestDataPausedTrue
 	}
 
-	var patchErr error
-
-	runStrategy, err := vm.RunStrategy()
-	if err != nil {
-		writeError(errors.NewInternalError(err), response)
-		return
-	}
-	// RunStrategyHalted         -> spec.running = true / send start request for paused start
-	// RunStrategyManual         -> send start request
-	// RunStrategyAlways         -> doesn't make sense
-	// RunStrategyRerunOnFailure -> doesn't make sense
-	// RunStrategyOnce           -> doesn't make sense
-	switch runStrategy {
-	case v1.RunStrategyHalted:
-		pausedStartStrategy := v1.StartStrategyPaused
-		// Send start request if VM should start paused. virt-controller will update RunStrategy upon this request.
-		// No need to send the request if StartStrategy is already set to Paused in VMI Spec.
-		if startPaused && (vm.Spec.Template == nil || vm.Spec.Template.Spec.StartStrategy != &pausedStartStrategy) {
-			patchBytes, err := getChangeRequestJson(vm, v1.VirtualMachineStateChangeRequest{
-				Action: v1.StartRequest,
-				Data:   startChangeRequestData,
-			})
-			if err != nil {
-				writeError(errors.NewInternalError(err), response)
-				return
-			}
-			log.Log.Object(vm).V(4).Infof(patchingVMStatusFmt, string(patchBytes))
-			_, patchErr = app.virtCli.VirtualMachine(vm.Namespace).PatchStatus(context.Background(), vm.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: bodyStruct.DryRun})
-		} else {
-			patchBytes, err := getRunningPatch(vm, true)
-			if err != nil {
-				writeError(errors.NewInternalError(err), response)
-				return
-			}
-			log.Log.Object(vm).V(4).Infof(patchingVMFmt, string(patchBytes))
-			_, patchErr = app.virtCli.VirtualMachine(namespace).Patch(context.Background(), vm.GetName(), types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: bodyStruct.DryRun})
-		}
-
-	case v1.RunStrategyRerunOnFailure, v1.RunStrategyManual:
-		needsRestart := false
-		if (runStrategy == v1.RunStrategyRerunOnFailure && vmi != nil && vmi.Status.Phase == v1.Succeeded) ||
-			(runStrategy == v1.RunStrategyManual && vmi != nil && vmi.IsFinal()) {
-			needsRestart = true
-		} else if runStrategy == v1.RunStrategyRerunOnFailure && vmi != nil && vmi.Status.Phase == v1.Failed {
-			writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf("%v does not support starting VM from failed state", v1.RunStrategyRerunOnFailure)), response)
-			return
-		}
-
-		var patchBytes []byte
-		if needsRestart {
-			patchBytes, err = getChangeRequestJson(vm,
-				v1.VirtualMachineStateChangeRequest{Action: v1.StopRequest, UID: &vmi.UID},
-				v1.VirtualMachineStateChangeRequest{Action: v1.StartRequest, Data: startChangeRequestData})
-		} else {
-			patchBytes, err = getChangeRequestJson(vm,
-				v1.VirtualMachineStateChangeRequest{Action: v1.StartRequest, Data: startChangeRequestData})
-		}
-		if err != nil {
-			writeError(errors.NewInternalError(err), response)
-			return
-		}
-		log.Log.Object(vm).V(4).Infof(patchingVMStatusFmt, string(patchBytes))
-		_, patchErr = app.virtCli.VirtualMachine(vm.Namespace).PatchStatus(context.Background(), vm.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: bodyStruct.DryRun})
-	case v1.RunStrategyAlways, v1.RunStrategyOnce:
-		writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf("%v does not support manual start requests", runStrategy)), response)
-		return
-	}
-
-	if patchErr != nil {
-		if strings.Contains(patchErr.Error(), jsonpatchTestErr) {
-			writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, patchErr), response)
-		} else {
-			writeError(errors.NewInternalError(patchErr), response)
-		}
+	// Delegate to the lifecycle package so the start logic lives in exactly one place
+	if statusErr := lifecycle.NewHandler(app.virtCli).StartVM(request.Request.Context(), namespace, name, startOptions); statusErr != nil {
+		writeError(statusErr, response)
 		return
 	}
 
