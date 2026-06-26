@@ -17,12 +17,13 @@
  *
  */
 
-package rest
+package streaming
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 
-	restful "github.com/emicklei/go-restful/v3"
 	"k8s.io/apimachinery/pkg/api/errors"
 
 	v1 "kubevirt.io/api/core/v1"
@@ -32,21 +33,18 @@ import (
 	apimetrics "kubevirt.io/kubevirt/pkg/monitoring/metrics/virt-api"
 )
 
-func (app *SubresourceAPIApp) ConsoleRequestHandler(request *restful.Request, response *restful.Response) {
-	activeConnectionMetric := apimetrics.NewActiveConsoleConnection(request.PathParameter("namespace"), request.PathParameter("name"))
+// StreamConsole proxies the serial console of the named VMI as a raw,
+// bidirectional websocket stream
+func (s *Streamer) StreamConsole(ctx context.Context, namespace, name string, w http.ResponseWriter, req *http.Request) *errors.StatusError {
+	activeConnectionMetric := apimetrics.NewActiveConsoleConnection(namespace, name)
 	defer activeConnectionMetric.Dec()
+	defer apimetrics.SetVMILastConnectionTimestamp(namespace, name)
 
-	defer apimetrics.SetVMILastConnectionTimestamp(request.PathParameter("namespace"), request.PathParameter("name"))
-
-	streamer := NewRawStreamer(
-		app.FetchVirtualMachineInstance,
-		validateVMIForConsole,
-		app.virtHandlerDialer(func(vmi *v1.VirtualMachineInstance, conn kubecli.VirtHandlerConn) (string, error) {
+	return s.streamRaw(ctx, namespace, name, w, req, validateVMIForConsole,
+		func(vmi *v1.VirtualMachineInstance, conn kubecli.VirtHandlerConn) (string, error) {
 			return conn.ConsoleURI(vmi)
-		}),
+		},
 	)
-
-	streamer.Handle(request, response)
 }
 
 func validateVMIForConsole(vmi *v1.VirtualMachineInstance) *errors.StatusError {
@@ -59,7 +57,7 @@ func validateVMIForConsole(vmi *v1.VirtualMachineInstance) *errors.StatusError {
 		return errors.NewConflict(v1.Resource("virtualmachineinstance"), vmi.Name, fmt.Errorf("VMI is in failed status"))
 	}
 	if !vmi.IsRunning() {
-		return errors.NewBadRequest(vmiNotRunning)
+		return errors.NewBadRequest("VMI is not running")
 	}
 	return nil
 }

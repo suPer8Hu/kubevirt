@@ -69,6 +69,7 @@ import (
 
 	apiserver "kubevirt.io/kubevirt/pkg/virt-api/apiserver"
 	"kubevirt.io/kubevirt/pkg/virt-api/apiserver/storage/virtualmachine"
+	"kubevirt.io/kubevirt/pkg/virt-api/apiserver/storage/virtualmachineinstance"
 	"kubevirt.io/kubevirt/pkg/virt-api/definitions"
 	"kubevirt.io/kubevirt/pkg/virt-api/rest"
 	"kubevirt.io/kubevirt/pkg/virt-api/webhooks"
@@ -325,12 +326,6 @@ func (app *virtAPIApp) composeSubresources() {
 			Returns(http.StatusOK, "OK", "").
 			Returns(http.StatusNotFound, httpStatusNotFoundMessage, "").
 			Returns(http.StatusBadRequest, httpStatusBadRequestMessage, ""))
-
-		subws.Route(subws.GET(definitions.NamespacedResourcePath(subresourcesvmiGVR) + definitions.SubResourcePath("console")).
-			To(subresourceApp.ConsoleRequestHandler).
-			Param(definitions.NamespaceParam(subws)).Param(definitions.NameParam(subws)).
-			Operation(version.Version + "Console").
-			Doc("Open a websocket connection to a serial console on the specified VirtualMachineInstance."))
 
 		subws.Route(subws.GET(definitions.NamespacedResourcePath(subresourcesvmiGVR) + definitions.SubResourcePath("vnc")).
 			To(subresourceApp.VNCRequestHandler).
@@ -650,10 +645,6 @@ func (app *virtAPIApp) composeSubresources() {
 					},
 					{
 						Name:       "virtualmachineinstances/vnc/screenshot",
-						Namespaced: true,
-					},
-					{
-						Name:       "virtualmachineinstances/console",
 						Namespaced: true,
 					},
 					{
@@ -1186,7 +1177,11 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 	// Register each version gets its own storage instances.
 	apiGroups := apiserver.APIGroups{}
 	for _, gv := range v1.SubresourceGroupVersions {
-		apiGroups[gv] = virtualmachine.NewStorageMap(app.virtCli, app.clusterConfig)
+		storage := virtualmachine.NewStorageMap(app.virtCli, app.clusterConfig)
+		for resource, store := range virtualmachineinstance.NewStorageMap(app.virtCli, app.consoleServerPort, app.handlerTLSConfiguration) {
+			storage[resource] = store
+		}
+		apiGroups[gv] = storage
 	}
 
 	log.Log.Infof(
