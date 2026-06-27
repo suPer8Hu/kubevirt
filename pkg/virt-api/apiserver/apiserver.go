@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/options"
@@ -43,6 +44,16 @@ import (
 
 type (
 	APIGroups = map[schema.GroupVersion]map[string]rest.Storage
+
+	// a plain mux handler that is served from the secured handler chain for the requests
+	// its Matches predicate selects. It is meant for endpoints that cannot be
+	// expressed with a rest.Storage interface, e.g. expand-vm-spec which does a
+	// PUT to the collection path without a name.
+	ConditionalAPIHandler struct {
+		Matches func(*request.RequestInfo) bool
+		Handler http.Handler
+	}
+
 	apiserver struct {
 		secureServingOpts *options.SecureServingOptionsWithLoopback
 		authnOpts         *options.DelegatingAuthenticationOptions
@@ -50,6 +61,7 @@ type (
 
 		fallbackHandler http.Handler
 		bridgePaths     []string
+		apiHandlers     []ConditionalAPIHandler
 	}
 )
 
@@ -91,6 +103,11 @@ func (a *apiserver) WithBridgePaths(paths ...string) *apiserver {
 	return a
 }
 
+func (a *apiserver) WithAPIHandlers(handlers ...ConditionalAPIHandler) *apiserver {
+	a.apiHandlers = append(a.apiHandlers, handlers...)
+	return a
+}
+
 func (a *apiserver) WithSecureServingCert(certFile, keyFile string) *apiserver {
 	a.secureServingOpts.ServerCert.CertKey.CertFile = certFile
 	a.secureServingOpts.ServerCert.CertKey.KeyFile = keyFile
@@ -119,14 +136,36 @@ func (a *apiserver) Run(
 	a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths,
 		getAdditionalAlwaysAllowPaths(apiGroups)...,
 	)
-	if a.fallbackHandler != nil && len(a.bridgePaths) > 0 {
+	bridgeEnabled := a.fallbackHandler != nil && len(a.bridgePaths) > 0
+	if bridgeEnabled || len(a.apiHandlers) > 0 {
 		matchesBridgePath := newPathMatcher(a.bridgePaths)
+		apiHandlers := a.apiHandlers
 		base := config.BuildHandlerChainFunc
 		if base == nil {
 			base = genericapiserver.DefaultBuildHandlerChain
 		}
 		config.BuildHandlerChainFunc = func(apiHandler http.Handler, c *genericapiserver.Config) http.Handler {
-			secured := base(apiHandler, c)
+			dispatcher := apiHandler
+			if len(apiHandlers) > 0 {
+				next := apiHandler
+				dispatcher = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if info, ok := request.RequestInfoFrom(r.Context()); ok {
+						for _, ah := range apiHandlers {
+							if ah.Matches(info) {
+								ah.Handler.ServeHTTP(w, r)
+								return
+							}
+						}
+					}
+					next.ServeHTTP(w, r)
+				})
+			}
+
+			secured := base(dispatcher, c)
+			if !bridgeEnabled {
+				return secured
+			}
+
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if matchesBridgePath(r.URL.Path) {
 					a.fallbackHandler.ServeHTTP(w, r)

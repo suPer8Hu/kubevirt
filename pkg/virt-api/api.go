@@ -40,6 +40,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/tools/cache"
 	certificate2 "k8s.io/client-go/util/certificate"
 	"k8s.io/client-go/util/flowcontrol"
@@ -71,6 +72,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/virt-api/apiserver/storage/virtualmachine"
 	"kubevirt.io/kubevirt/pkg/virt-api/apiserver/storage/virtualmachineinstance"
 	"kubevirt.io/kubevirt/pkg/virt-api/definitions"
+	"kubevirt.io/kubevirt/pkg/virt-api/expand"
 	"kubevirt.io/kubevirt/pkg/virt-api/rest"
 	"kubevirt.io/kubevirt/pkg/virt-api/webhooks"
 	mutating_webhook "kubevirt.io/kubevirt/pkg/virt-api/webhooks/mutating-webhook"
@@ -226,7 +228,6 @@ func (app *virtAPIApp) composeSubresources() {
 	for _, version := range v1.SubresourceGroupVersions {
 		subresourcesvmGVR := schema.GroupVersionResource{Group: version.Group, Version: version.Version, Resource: "virtualmachines"}
 		subresourcesvmiGVR := schema.GroupVersionResource{Group: version.Group, Version: version.Version, Resource: "virtualmachineinstances"}
-		expandvmspecGVR := schema.GroupVersionResource{Group: version.Group, Version: version.Version, Resource: "expand-vm-spec"}
 
 		subws := new(restful.WebService)
 		subws.Doc(fmt.Sprintf("KubeVirt \"%s\" Subresource API.", version.Version))
@@ -382,17 +383,6 @@ func (app *virtAPIApp) composeSubresources() {
 			Param(definitions.PortForwardProtocolParameter(subws)).
 			Operation(version.Version + "vm-PortForwardWithProtocol").
 			Doc("Open a websocket connection forwarding traffic of the specified protocol (either tcp or udp) to the specified VirtualMachine and port."))
-
-		subws.Route(subws.PUT(definitions.NamespacedResourceBasePath(expandvmspecGVR)).
-			To(subresourceApp.ExpandSpecRequestHandler).
-			Param(definitions.NamespaceParam(subws)).
-			Operation(version.Version+"ExpandSpec").
-			Consumes(restful.MIME_JSON).
-			Produces(restful.MIME_JSON).
-			Doc("Expands instancetype and preference into the passed VirtualMachine object.").
-			Returns(http.StatusOK, "OK", "").
-			Returns(http.StatusBadRequest, httpStatusBadRequestMessage, "").
-			Returns(http.StatusInternalServerError, httpStatusInternalServerError, ""))
 
 		subws.Route(subws.GET(definitions.SubResourcePath("version")).Produces(restful.MIME_JSON).
 			To(func(request *restful.Request, response *restful.Response) {
@@ -1170,7 +1160,18 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 		WithSecureServingPort(app.Port).
 		WithSecureServingCert(app.tlsCertFilePath, app.tlsKeyFilePath).
 		WithFallbackHandler(http.DefaultServeMux).
-		WithBridgePaths(legacyBridgePaths()...)
+		WithBridgePaths(legacyBridgePaths()...).
+		// expand-vm-spec is a PUT to the collection path without a name which
+		// cannot be expressed as a rest.Storage. So serve it as a plain mux handler
+		// (like the webhooks) for every subresource version
+		WithAPIHandlers(apiserver.ConditionalAPIHandler{
+			Matches: func(info *request.RequestInfo) bool {
+				return info.IsResourceRequest &&
+					info.APIGroup == v1.SubresourceGroupName &&
+					info.Resource == "expand-vm-spec"
+			},
+			Handler: expand.NewHandler(app.clusterConfig, app.virtCli),
+		})
 
 	scheme := apiserver.NewScheme()
 

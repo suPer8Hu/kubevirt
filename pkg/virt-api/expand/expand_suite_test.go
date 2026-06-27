@@ -17,24 +17,14 @@
  *
  */
 
-package rest
+package expand
 
 import (
-	"github.com/emicklei/go-restful/v3"
-	"k8s.io/apimachinery/pkg/api/errors"
+	"testing"
 
-	v1 "kubevirt.io/api/core/v1"
-	"kubevirt.io/client-go/log"
+	"kubevirt.io/client-go/testutils"
 )
 
-func (app *SubresourceAPIApp) expandSpecResponse(vm *v1.VirtualMachine, errorFunc func(error) *errors.StatusError, response *restful.Response) {
-	expandedVM, err := app.instancetypeExpander.Expand(vm)
-	if err != nil {
-		writeError(errorFunc(err), response)
-		return
-
-	}
-	if err = response.WriteEntity(expandedVM); err != nil {
-		log.Log.Reason(err).Error("Failed to write http response.")
-	}
+func TestExpand(t *testing.T) {
+	testutils.KubeVirtTestSuiteSetup(t)
 }
