@@ -946,9 +946,6 @@ func (app *virtAPIApp) registerValidatingWebhooks(informers *webhooks.Informers)
 	http.HandleFunc(components.VMIUpdateValidatePath, func(w http.ResponseWriter, r *http.Request) {
 		validating_webhook.ServeVMIUpdate(w, r, app.clusterConfig, app.kubeVirtServiceAccounts)
 	})
-	http.HandleFunc(components.VMValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMs(w, r, app.clusterConfig, app.virtCli, informers, app.kubeVirtServiceAccounts)
-	})
 	http.HandleFunc(components.VMIRSValidatePath, func(w http.ResponseWriter, r *http.Request) {
 		validating_webhook.ServeVMIRS(w, r, app.clusterConfig)
 	})
@@ -1108,7 +1105,7 @@ func (app *virtAPIApp) Run() {
 	app.prepareLegacyHandlers(kubeInformerFactory)
 
 	ctx := app.signalAwareContext()
-	if err := app.startAggregatedAPIServer(ctx); err != nil && err != http.ErrServerClosed {
+	if err := app.startAggregatedAPIServer(ctx, webhookInformers); err != nil && err != http.ErrServerClosed {
 		panic(err)
 	}
 }
@@ -1155,7 +1152,7 @@ func (app *virtAPIApp) signalAwareContext() context.Context {
 	return ctx
 }
 
-func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
+func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context, webhookInformers *webhooks.Informers) error {
 	s := apiserver.New().
 		WithSecureServingPort(app.Port).
 		WithSecureServingCert(app.tlsCertFilePath, app.tlsKeyFilePath).
@@ -1175,6 +1172,12 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 					info.Resource == "expand-vm-spec"
 			},
 			Handler: expand.NewHandler(app.clusterConfig, app.virtCli),
+		}).
+		WithMuxHandlers(apiserver.MuxHandler{
+			Path: components.VMValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMs(w, r, app.clusterConfig, app.virtCli, webhookInformers, app.kubeVirtServiceAccounts)
+			}),
 		})
 
 	scheme := apiserver.NewScheme()
@@ -1218,7 +1221,6 @@ func legacyBridgePaths() []string {
 		// Validating webhooks.
 		components.VMICreateValidatePath,
 		components.VMIUpdateValidatePath,
-		components.VMValidatePath,
 		components.VMIRSValidatePath,
 		components.VMPoolValidatePath,
 		components.VMIPresetValidatePath,

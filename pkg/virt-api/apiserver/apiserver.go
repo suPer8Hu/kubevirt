@@ -56,6 +56,14 @@ type (
 		Handler http.Handler
 	}
 
+	// MuxHandler registered http.Handler on the GenericAPIServer's
+	// NonGoRestfulMux under a fixed path. It is meant for endpoints that are
+	// not part of the aggregated API surface and are not rest.Storage.
+	MuxHandler struct {
+		Path    string
+		Handler http.Handler
+	}
+
 	apiserver struct {
 		secureServingOpts *options.SecureServingOptionsWithLoopback
 		authnOpts         *options.DelegatingAuthenticationOptions
@@ -64,6 +72,7 @@ type (
 		fallbackHandler http.Handler
 		bridgePaths     []string
 		apiHandlers     []ConditionalAPIHandler
+		muxHandlers     []MuxHandler
 
 		longRunningSubresources []string
 	}
@@ -112,6 +121,12 @@ func (a *apiserver) WithAPIHandlers(handlers ...ConditionalAPIHandler) *apiserve
 	return a
 }
 
+// WithMuxHandlers registered plain http.Handlers on the GenericAPIServer's NonGoRestfulMux
+func (a *apiserver) WithMuxHandlers(handlers ...MuxHandler) *apiserver {
+	a.muxHandlers = append(a.muxHandlers, handlers...)
+	return a
+}
+
 // marks the given subresources as long-running so the GenericAPIServer does not
 // enforce its default RequestTimeout on them.
 func (a *apiserver) WithLongRunningSubresources(subresources ...string) *apiserver {
@@ -152,6 +167,9 @@ func (a *apiserver) Run(
 	a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths,
 		getAdditionalAlwaysAllowPaths(apiGroups)...,
 	)
+	for _, mh := range a.muxHandlers {
+		a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths, mh.Path)
+	}
 	bridgeEnabled := a.fallbackHandler != nil && len(a.bridgePaths) > 0
 	if bridgeEnabled || len(a.apiHandlers) > 0 {
 		matchesBridgePath := newPathMatcher(a.bridgePaths)
@@ -229,6 +247,10 @@ func (a *apiserver) Run(
 				return err
 			}
 		}
+	}
+
+	for _, mh := range a.muxHandlers {
+		server.Handler.NonGoRestfulMux.Handle(mh.Path, mh.Handler)
 	}
 
 	if a.fallbackHandler != nil {
