@@ -1161,6 +1161,10 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context) error {
 		WithSecureServingCert(app.tlsCertFilePath, app.tlsKeyFilePath).
 		WithFallbackHandler(http.DefaultServeMux).
 		WithBridgePaths(legacyBridgePaths()...).
+		// Streaming subresources must not be subject to the GenericAPIServer default request
+		// timeout. This covers both the migrated console storage and the streaming endpoints
+		// still served by the legacy handlers through the secured chain.
+		WithLongRunningSubresources("console", "vnc", "usbredir", "vsock", "portforward").
 		// expand-vm-spec is a PUT to the collection path without a name which
 		// cannot be expressed as a rest.Storage. So serve it as a plain mux handler
 		// (like the webhooks) for every subresource version

@@ -33,9 +33,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 	genericapiserver "k8s.io/apiserver/pkg/server"
+	genericfilters "k8s.io/apiserver/pkg/server/filters"
 	"k8s.io/apiserver/pkg/server/options"
 	"k8s.io/apiserver/pkg/util/compatibility"
 	"k8s.io/klog/v2"
@@ -62,6 +64,8 @@ type (
 		fallbackHandler http.Handler
 		bridgePaths     []string
 		apiHandlers     []ConditionalAPIHandler
+
+		longRunningSubresources []string
 	}
 )
 
@@ -108,6 +112,13 @@ func (a *apiserver) WithAPIHandlers(handlers ...ConditionalAPIHandler) *apiserve
 	return a
 }
 
+// marks the given subresources as long-running so the GenericAPIServer does not
+// enforce its default RequestTimeout on them.
+func (a *apiserver) WithLongRunningSubresources(subresources ...string) *apiserver {
+	a.longRunningSubresources = append(a.longRunningSubresources, subresources...)
+	return a
+}
+
 func (a *apiserver) WithSecureServingCert(certFile, keyFile string) *apiserver {
 	a.secureServingOpts.ServerCert.CertKey.CertFile = certFile
 	a.secureServingOpts.ServerCert.CertKey.KeyFile = keyFile
@@ -129,6 +140,11 @@ func (a *apiserver) Run(
 	config.OpenAPIV3Config = openapiV3Config
 	// Disable discovery to not confuse kubectl and other client with dummy resources
 	config.EnableDiscovery = false
+
+	config.LongRunningFunc = genericfilters.BasicLongRunningRequestCheck(
+		sets.NewString("watch"),
+		sets.NewString(a.longRunningSubresources...),
+	)
 
 	a.authzOpts.AlwaysAllowPaths = append(a.authzOpts.AlwaysAllowPaths,
 		"/", genericapiserver.APIGroupPrefix, "/openapi/v2", "/openapi/v3", "/openapi/v3/*",
