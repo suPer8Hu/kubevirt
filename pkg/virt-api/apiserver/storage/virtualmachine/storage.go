@@ -24,14 +24,15 @@ import (
 
 	"kubevirt.io/client-go/kubecli"
 
-	"kubevirt.io/kubevirt/pkg/virt-api/lifecycle"
+	subresourcerest "kubevirt.io/kubevirt/pkg/virt-api/rest"
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
 )
 
 func NewStorageMap(virtClient kubecli.KubevirtClient, clusterConfig *virtconfig.ClusterConfig) map[string]rest.Storage {
+	subresourceApp := subresourcerest.NewSubresourceAPIApp(virtClient, 0, nil, clusterConfig)
 	return map[string]rest.Storage{
 		"virtualmachines":             NewDummyREST(),
 		"virtualmachines/expand-spec": NewExpandSpecREST(virtClient, clusterConfig),
-		"virtualmachines/start":       NewStartREST(lifecycle.NewHandler(virtClient)),
+		"virtualmachines/start":       NewStartREST(subresourceApp),
 	}
 }
