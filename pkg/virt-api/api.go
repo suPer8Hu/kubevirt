@@ -22,6 +22,7 @@ package virt_api
 import (
 	"context"
 	"crypto/tls"
+	goflag "flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -69,9 +70,6 @@ const (
 	// Default port that virt-api listens on.
 	defaultPort = 443
 
-	// Default address that virt-api listens on.
-	defaultHost = "0.0.0.0"
-
 	DefaultConsoleServerPort = 8186
 
 	defaultCAConfigMapName     = "kubevirt-ca"
@@ -88,9 +86,8 @@ type VirtApi interface {
 }
 
 type virtAPIApp struct {
-	// LEGACY(virt-api migration): listen address/port should be wired through
-	// apiserver.AddFlags() instead of service.ServiceListen
-	service.ServiceListen
+	apiServer *apiserver.APIServer
+
 	// LEGACY(virt-api-migration): still passed by virt-operator but no longer read
 	SubresourcesOnly bool
 	virtCli          kubecli.KubevirtClient
@@ -107,8 +104,6 @@ type virtAPIApp struct {
 
 	// Serving certificate handed to the GenericAPIServer.
 	caConfigMapName   string
-	tlsCertFilePath   string
-	tlsKeyFilePath    string
 	externallyManaged bool
 
 	reloadableRateLimiter        *ratelimiter.ReloadableRateLimiter
@@ -127,8 +122,9 @@ var _ service.Service = &virtAPIApp{}
 func NewVirtApi() VirtApi {
 
 	app := &virtAPIApp{}
-	app.BindAddress = defaultHost
-	app.Port = defaultPort
+	app.apiServer = apiserver.New().
+		WithSecureServingPort(defaultPort).
+		WithSecureServingCert(defaultTlsCertFilePath, defaultTlsKeyFilePath)
 
 	return app
 }
@@ -375,9 +371,7 @@ func (app *virtAPIApp) signalAwareContext() context.Context {
 }
 
 func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context, webhookInformers *webhooks.Informers) error {
-	s := apiserver.New().
-		WithSecureServingPort(app.Port).
-		WithSecureServingCert(app.tlsCertFilePath, app.tlsKeyFilePath).
+	s := app.apiServer.
 		// LEGACY(virt-api-migration): this is the legacy bridge, I'll remove in final cleanup commit
 		WithFallbackHandler(http.DefaultServeMux).
 		WithBridgePaths(legacyBridgePaths()...).
@@ -412,10 +406,7 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context, webhookInfo
 		apiGroups[gv] = storage
 	}
 
-	log.Log.Infof(
-		"starting aggregated API server (GenericAPIServer) on port %d as the single virt-api listener",
-		app.Port,
-	)
+	log.Log.Info("starting aggregated API server (GenericAPIServer) on port %d as the single virt-api listener")
 
 	return s.Run(
 		ctx,
@@ -502,9 +493,11 @@ func (app *virtAPIApp) shouldChangeRateLimiter() {
 }
 
 func (app *virtAPIApp) AddFlags() {
-	app.InitFlags()
+	flag.CommandLine.AddGoFlag(goflag.CommandLine.Lookup("v"))
+	flag.CommandLine.AddGoFlag(goflag.CommandLine.Lookup("kubeconfig"))
+	flag.CommandLine.AddGoFlag(goflag.CommandLine.Lookup("master"))
 
-	app.AddCommonFlags()
+	app.apiServer.AddFlags(flag.CommandLine)
 
 	flag.BoolVar(&app.SubresourcesOnly, "subresources-only", false,
 		"Only serve subresource endpoints")
@@ -512,10 +505,6 @@ func (app *virtAPIApp) AddFlags() {
 		"The port virt-handler listens on for console requests")
 	flag.StringVar(&app.caConfigMapName, "ca-configmap-name", defaultCAConfigMapName,
 		"The name of configmap containing CA certificates to authenticate requests presenting client certificates with matching CommonName")
-	flag.StringVar(&app.tlsCertFilePath, "tls-cert-file", defaultTlsCertFilePath,
-		"File containing the default x509 Certificate for HTTPS")
-	flag.StringVar(&app.tlsKeyFilePath, "tls-key-file", defaultTlsKeyFilePath,
-		"File containing the default x509 private key matching --tls-cert-file")
 	flag.StringVar(&app.handlerCertFilePath, "handler-cert-file", defaultHandlerCertFilePath,
 		"Client certificate used to prove the identity of the virt-api when it must call virt-handler during a request")
 	flag.StringVar(&app.handlerKeyFilePath, "handler-key-file", defaultHandlerKeyFilePath,

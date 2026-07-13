@@ -335,7 +335,7 @@ func NewApiServerDeployment(config *operatorutil.KubeVirtDeploymentConfig, produ
 		VirtAPIName,
 	}
 	container.Args = []string{
-		portName,
+		"--secure-port",
 		"8443",
 		"--console-server-port",
 		"8186",

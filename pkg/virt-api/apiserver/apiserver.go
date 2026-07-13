@@ -64,7 +64,7 @@ type (
 		Handler http.Handler
 	}
 
-	apiserver struct {
+	APIServer struct {
 		secureServingOpts *options.SecureServingOptionsWithLoopback
 		authnOpts         *options.DelegatingAuthenticationOptions
 		authzOpts         *options.DelegatingAuthorizationOptions
@@ -78,69 +78,75 @@ type (
 	}
 )
 
-func New() *apiserver {
-	return &apiserver{
+func New() *APIServer {
+	return &APIServer{
 		secureServingOpts: options.NewSecureServingOptions().WithLoopback(),
 		authnOpts:         options.NewDelegatingAuthenticationOptions(),
 		authzOpts:         options.NewDelegatingAuthorizationOptions(),
 	}
 }
 
-func (a *apiserver) AddFlags(fs *pflag.FlagSet) {
+func (a *APIServer) AddFlags(fs *pflag.FlagSet) {
 	a.secureServingOpts.AddFlags(fs)
 	a.authnOpts.AddFlags(fs)
 	a.authzOpts.AddFlags(fs)
 
 	goFs := flag.NewFlagSet("", flag.ExitOnError)
 	klog.InitFlags(goFs)
-	fs.AddGoFlagSet(goFs)
+
+	// to prevent flags from being overridden by the binary
+	goFs.VisitAll(func(gf *flag.Flag) {
+		if fs.Lookup(gf.Name) == nil {
+			fs.AddGoFlag(gf)
+		}
+	})
 }
 
-func (a *apiserver) WithSecureServingPort(port int) *apiserver {
+func (a *APIServer) WithSecureServingPort(port int) *APIServer {
 	a.secureServingOpts.BindPort = port
 	return a
 }
 
-func (a *apiserver) WithSecureServingCertDirectory(dir string) *apiserver {
+func (a *APIServer) WithSecureServingCertDirectory(dir string) *APIServer {
 	a.secureServingOpts.ServerCert.CertDirectory = dir
 	return a
 }
 
-func (a *apiserver) WithFallbackHandler(h http.Handler) *apiserver {
+func (a *APIServer) WithFallbackHandler(h http.Handler) *APIServer {
 	a.fallbackHandler = h
 	return a
 }
 
-func (a *apiserver) WithBridgePaths(paths ...string) *apiserver {
+func (a *APIServer) WithBridgePaths(paths ...string) *APIServer {
 	a.bridgePaths = append(a.bridgePaths, paths...)
 	return a
 }
 
-func (a *apiserver) WithAPIHandlers(handlers ...ConditionalAPIHandler) *apiserver {
+func (a *APIServer) WithAPIHandlers(handlers ...ConditionalAPIHandler) *APIServer {
 	a.apiHandlers = append(a.apiHandlers, handlers...)
 	return a
 }
 
 // WithMuxHandlers registered plain http.Handlers on the GenericAPIServer's NonGoRestfulMux
-func (a *apiserver) WithMuxHandlers(handlers ...MuxHandler) *apiserver {
+func (a *APIServer) WithMuxHandlers(handlers ...MuxHandler) *APIServer {
 	a.muxHandlers = append(a.muxHandlers, handlers...)
 	return a
 }
 
 // marks the given subresources as long-running so the GenericAPIServer does not
 // enforce its default RequestTimeout on them.
-func (a *apiserver) WithLongRunningSubresources(subresources ...string) *apiserver {
+func (a *APIServer) WithLongRunningSubresources(subresources ...string) *APIServer {
 	a.longRunningSubresources = append(a.longRunningSubresources, subresources...)
 	return a
 }
 
-func (a *apiserver) WithSecureServingCert(certFile, keyFile string) *apiserver {
+func (a *APIServer) WithSecureServingCert(certFile, keyFile string) *APIServer {
 	a.secureServingOpts.ServerCert.CertKey.CertFile = certFile
 	a.secureServingOpts.ServerCert.CertKey.KeyFile = keyFile
 	return a
 }
 
-func (a *apiserver) Run(
+func (a *APIServer) Run(
 	ctx context.Context,
 	name string,
 	scheme *runtime.Scheme,
