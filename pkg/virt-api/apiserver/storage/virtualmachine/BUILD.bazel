@@ -5,7 +5,10 @@ go_library(
     srcs = [
         "dummy.go",
         "expandspec.go",
+        "migrate.go",
+        "restart.go",
         "start.go",
+        "stop.go",
         "storage.go",
     ],
     importpath = "kubevirt.io/kubevirt/pkg/virt-api/apiserver/storage/virtualmachine",

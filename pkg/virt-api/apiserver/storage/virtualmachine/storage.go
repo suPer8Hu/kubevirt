@@ -34,5 +34,8 @@ func NewStorageMap(virtClient kubecli.KubevirtClient, clusterConfig *virtconfig.
 		"virtualmachines":             NewDummyREST(),
 		"virtualmachines/expand-spec": NewExpandSpecREST(virtClient, clusterConfig),
 		"virtualmachines/start":       NewStartREST(subresourceApp),
+		"virtualmachines/stop":        NewStopREST(subresourceApp),
+		"virtualmachines/restart":     NewRestartREST(subresourceApp),
+		"virtualmachines/migrate":     NewMigrateREST(subresourceApp),
 	}
 }

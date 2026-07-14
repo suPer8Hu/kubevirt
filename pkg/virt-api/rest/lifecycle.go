@@ -160,13 +160,93 @@ func (app *SubresourceAPIApp) StartVMRequestHandler(request *restful.Request, re
 	response.WriteHeader(http.StatusAccepted)
 }
 
-func (app *SubresourceAPIApp) StopVMRequestHandler(request *restful.Request, response *restful.Response) {
+func (app *SubresourceAPIApp) StopVM(ctx context.Context, namespace, name string, stopOptions *v1.StopOptions) *errors.StatusError {
 	// RunStrategyHalted         -> force stop if grace period in request is shorter than before, otherwise doesn't make sense
 	// RunStrategyManual         -> send stop request
 	// RunStrategyAlways         -> spec.running = false
 	// RunStrategyRerunOnFailure -> send stop request
 	// RunStrategyOnce           -> spec.running = false
 
+	vm, statusErr := app.fetchVirtualMachine(name, namespace)
+	if statusErr != nil {
+		return statusErr
+	}
+
+	runStrategy, err := vm.RunStrategy()
+	if err != nil {
+		return errors.NewInternalError(err)
+	}
+
+	hasVMI := true
+	vmi, err := app.virtCli.VirtualMachineInstance(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil && errors.IsNotFound(err) {
+		hasVMI = false
+	} else if err != nil {
+		return errors.NewInternalError(err)
+	}
+
+	var oldGracePeriodSeconds int64
+	var patchErr error
+	if hasVMI && !vmi.IsFinal() && stopOptions.GracePeriod != nil {
+		patchSet := patch.New()
+		// used for stopping a VM with RunStrategyHalted
+		if vmi.Spec.TerminationGracePeriodSeconds != nil {
+			oldGracePeriodSeconds = *vmi.Spec.TerminationGracePeriodSeconds
+			patchSet.AddOption(patch.WithTest("/spec/terminationGracePeriodSeconds", *vmi.Spec.TerminationGracePeriodSeconds))
+		} else {
+			patchSet.AddOption(patch.WithTest("/spec/terminationGracePeriodSeconds", nil))
+		}
+
+		patchSet.AddOption(patch.WithReplace("/spec/terminationGracePeriodSeconds", *stopOptions.GracePeriod))
+		patchBytes, err := patchSet.GeneratePayload()
+		if err != nil {
+			return errors.NewInternalError(err)
+		}
+
+		log.Log.Object(vmi).V(2).Infof("Patching VMI: %s", string(patchBytes))
+		_, err = app.virtCli.VirtualMachineInstance(namespace).Patch(ctx, vmi.GetName(), types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: stopOptions.DryRun})
+		if err != nil {
+			return errors.NewInternalError(err)
+		}
+	}
+
+	switch runStrategy {
+	case v1.RunStrategyHalted:
+		if !hasVMI || vmi.IsFinal() {
+			return errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(vmNotRunning))
+		}
+		if stopOptions.GracePeriod == nil || (vmi.Spec.TerminationGracePeriodSeconds != nil && *stopOptions.GracePeriod >= oldGracePeriodSeconds) {
+			return errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf("%v only supports manual stop requests with a shorter graceperiod", v1.RunStrategyHalted))
+		}
+		// same behavior as RunStrategyManual
+		patchErr = app.patchVMStatusStopped(ctx, vmi, vm, stopOptions)
+	case v1.RunStrategyRerunOnFailure, v1.RunStrategyManual:
+		if !hasVMI || vmi.IsFinal() {
+			return errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(vmNotRunning))
+		}
+		// pass the buck and ask virt-controller to stop the VM. this way the
+		// VM will retain RunStrategy = manual
+		patchErr = app.patchVMStatusStopped(ctx, vmi, vm, stopOptions)
+	case v1.RunStrategyAlways, v1.RunStrategyOnce:
+		patchBytes, err := getRunningPatch(vm, false)
+		if err != nil {
+			return errors.NewInternalError(err)
+		}
+		log.Log.Object(vm).V(4).Infof(patchingVMFmt, string(patchBytes))
+		_, patchErr = app.virtCli.VirtualMachine(namespace).Patch(ctx, vm.GetName(), types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: stopOptions.DryRun})
+	}
+
+	if patchErr != nil {
+		if strings.Contains(patchErr.Error(), jsonpatchTestErr) {
+			return errors.NewConflict(v1.Resource("virtualmachine"), name, patchErr)
+		}
+		return errors.NewInternalError(patchErr)
+	}
+
+	return nil
+}
+
+func (app *SubresourceAPIApp) StopVMRequestHandler(request *restful.Request, response *restful.Response) {
 	name := request.PathParameter("name")
 	namespace := request.PathParameter("namespace")
 
@@ -178,96 +258,8 @@ func (app *SubresourceAPIApp) StopVMRequestHandler(request *restful.Request, res
 		}
 	}
 
-	vm, statusErr := app.fetchVirtualMachine(name, namespace)
-	if statusErr != nil {
+	if statusErr := app.StopVM(request.Request.Context(), namespace, name, bodyStruct); statusErr != nil {
 		writeError(statusErr, response)
-		return
-	}
-
-	runStrategy, err := vm.RunStrategy()
-	if err != nil {
-		writeError(errors.NewInternalError(err), response)
-		return
-	}
-
-	hasVMI := true
-	vmi, err := app.virtCli.VirtualMachineInstance(namespace).Get(context.Background(), name, metav1.GetOptions{})
-	if err != nil && errors.IsNotFound(err) {
-		hasVMI = false
-	} else if err != nil {
-		writeError(errors.NewInternalError(err), response)
-		return
-	}
-
-	var oldGracePeriodSeconds int64
-	var patchErr error
-	if hasVMI && !vmi.IsFinal() && bodyStruct.GracePeriod != nil {
-		patchSet := patch.New()
-		// used for stopping a VM with RunStrategyHalted
-		if vmi.Spec.TerminationGracePeriodSeconds != nil {
-			oldGracePeriodSeconds = *vmi.Spec.TerminationGracePeriodSeconds
-			patchSet.AddOption(patch.WithTest("/spec/terminationGracePeriodSeconds", *vmi.Spec.TerminationGracePeriodSeconds))
-		} else {
-			patchSet.AddOption(patch.WithTest("/spec/terminationGracePeriodSeconds", nil))
-		}
-
-		patchSet.AddOption(patch.WithReplace("/spec/terminationGracePeriodSeconds", *bodyStruct.GracePeriod))
-		patchBytes, err := patchSet.GeneratePayload()
-		if err != nil {
-			writeError(errors.NewInternalError(err), response)
-			return
-		}
-
-		log.Log.Object(vmi).V(2).Infof("Patching VMI: %s", string(patchBytes))
-		_, err = app.virtCli.VirtualMachineInstance(namespace).Patch(context.Background(), vmi.GetName(), types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: bodyStruct.DryRun})
-		if err != nil {
-			writeError(errors.NewInternalError(err), response)
-			return
-		}
-	}
-
-	switch runStrategy {
-	case v1.RunStrategyHalted:
-		if !hasVMI || vmi.IsFinal() {
-			writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(vmNotRunning)), response)
-			return
-		}
-		if bodyStruct.GracePeriod == nil || (vmi.Spec.TerminationGracePeriodSeconds != nil && *bodyStruct.GracePeriod >= oldGracePeriodSeconds) {
-			writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf("%v only supports manual stop requests with a shorter graceperiod", v1.RunStrategyHalted)), response)
-			return
-		}
-		// same behavior as RunStrategyManual
-		patchErr, err = app.patchVMStatusStopped(vmi, vm, response, bodyStruct)
-		if err != nil {
-			return
-		}
-	case v1.RunStrategyRerunOnFailure, v1.RunStrategyManual:
-		if !hasVMI || vmi.IsFinal() {
-			writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(vmNotRunning)), response)
-			return
-		}
-		// pass the buck and ask virt-controller to stop the VM. this way the
-		// VM will retain RunStrategy = manual
-		patchErr, err = app.patchVMStatusStopped(vmi, vm, response, bodyStruct)
-		if err != nil {
-			return
-		}
-	case v1.RunStrategyAlways, v1.RunStrategyOnce:
-		patchBytes, err := getRunningPatch(vm, false)
-		if err != nil {
-			writeError(errors.NewInternalError(err), response)
-			return
-		}
-		log.Log.Object(vm).V(4).Infof(patchingVMFmt, string(patchBytes))
-		_, patchErr = app.virtCli.VirtualMachine(namespace).Patch(context.Background(), vm.GetName(), types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: bodyStruct.DryRun})
-	}
-
-	if patchErr != nil {
-		if strings.Contains(patchErr.Error(), jsonpatchTestErr) {
-			writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, patchErr), response)
-		} else {
-			writeError(errors.NewInternalError(patchErr), response)
-		}
 		return
 	}
 
@@ -409,105 +401,101 @@ func (app *SubresourceAPIApp) ResetVMIRequestHandler(request *restful.Request, r
 	app.putRequestHandlerWithErrorPostProcessing(request, response, nil, errorPostProcessing, getURL, false)
 }
 
-func (app *SubresourceAPIApp) RestartVMRequestHandler(request *restful.Request, response *restful.Response) {
+func (app *SubresourceAPIApp) RestartVM(ctx context.Context, namespace, name string, restartOptions *v1.RestartOptions) *errors.StatusError {
 	// RunStrategyHalted         -> doesn't make sense
 	// RunStrategyManual         -> send restart request
 	// RunStrategyAlways         -> send restart request
 	// RunStrategyRerunOnFailure -> send restart request
 	// RunStrategyOnce           -> doesn't make sense
-	name := request.PathParameter("name")
-	namespace := request.PathParameter("namespace")
 
-	bodyStruct := &v1.RestartOptions{}
-
-	if request.Request.Body != nil {
-		if err := decodeBody(request, bodyStruct); err != nil {
-			writeError(err, response)
-			return
-		}
-	}
-	if bodyStruct.GracePeriodSeconds != nil {
-		if *bodyStruct.GracePeriodSeconds > 0 {
-			writeError(errors.NewBadRequest(fmt.Sprintf("For force restart, only gracePeriod=0 is supported for now")), response)
-			return
-		} else if *bodyStruct.GracePeriodSeconds < 0 {
-			writeError(errors.NewBadRequest(fmt.Sprintf("gracePeriod has to be greater or equal to 0")), response)
-			return
+	if restartOptions.GracePeriodSeconds != nil {
+		if *restartOptions.GracePeriodSeconds > 0 {
+			return errors.NewBadRequest(fmt.Sprintf("For force restart, only gracePeriod=0 is supported for now"))
+		} else if *restartOptions.GracePeriodSeconds < 0 {
+			return errors.NewBadRequest(fmt.Sprintf("gracePeriod has to be greater or equal to 0"))
 		}
 	}
 
 	vm, statusErr := app.fetchVirtualMachine(name, namespace)
 	if statusErr != nil {
-		writeError(statusErr, response)
-		return
+		return statusErr
 	}
 	if controller.NewVirtualMachineConditionManager().HasConditionWithStatus(vm,
 		v1.VirtualMachineConditionType(v1.VirtualMachineInstanceVolumesChange), k8sv1.ConditionTrue) {
-		writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(volumeMigrationManualRecoveryRequiredErr)), response)
-		return
+		return errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(volumeMigrationManualRecoveryRequiredErr))
 	}
 
 	runStrategy, err := vm.RunStrategy()
 	if err != nil {
-		writeError(errors.NewInternalError(err), response)
-		return
+		return errors.NewInternalError(err)
 	}
 	if runStrategy == v1.RunStrategyHalted || runStrategy == v1.RunStrategyOnce {
-		writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf("RunStategy %v does not support manual restart requests", runStrategy)), response)
-		return
+		return errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf("RunStategy %v does not support manual restart requests", runStrategy))
 	}
 
-	vmi, err := app.virtCli.VirtualMachineInstance(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	vmi, err := app.virtCli.VirtualMachineInstance(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		if !errors.IsNotFound(err) {
-			writeError(errors.NewInternalError(err), response)
-			return
+			return errors.NewInternalError(err)
 		}
-		writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf("VM is not running: %v", v1.RunStrategyHalted)), response)
-		return
+		return errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf("VM is not running: %v", v1.RunStrategyHalted))
 	}
 
 	patchBytes, err := getChangeRequestJson(vm,
 		v1.VirtualMachineStateChangeRequest{Action: v1.StopRequest, UID: &vmi.UID},
 		v1.VirtualMachineStateChangeRequest{Action: v1.StartRequest})
 	if err != nil {
-		writeError(errors.NewInternalError(err), response)
-		return
+		return errors.NewInternalError(err)
 	}
 
 	log.Log.Object(vm).V(4).Infof(patchingVMFmt, string(patchBytes))
-	_, err = app.virtCli.VirtualMachine(vm.Namespace).PatchStatus(context.Background(), vm.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: bodyStruct.DryRun})
+	_, err = app.virtCli.VirtualMachine(vm.Namespace).PatchStatus(ctx, vm.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: restartOptions.DryRun})
 	if err != nil {
 		if strings.Contains(err.Error(), jsonpatchTestErr) {
-			writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, err), response)
-		} else {
-			writeError(errors.NewInternalError(err), response)
+			return errors.NewConflict(v1.Resource("virtualmachine"), name, err)
 		}
-		return
+		return errors.NewInternalError(err)
 	}
 
 	// Only force restart with GracePeriodSeconds=0 is supported for now
 	// Here we are deleting the Pod because CRDs don't support gracePeriodSeconds at the moment
-	if bodyStruct.GracePeriodSeconds != nil {
-		if *bodyStruct.GracePeriodSeconds == 0 {
+	if restartOptions.GracePeriodSeconds != nil {
+		if *restartOptions.GracePeriodSeconds == 0 {
 			vmiPodname, err := app.findPod(namespace, vmi)
 			if err != nil {
-				writeError(errors.NewInternalError(err), response)
-				return
+				return errors.NewInternalError(err)
 			}
 			if vmiPodname == "" {
-				response.WriteHeader(http.StatusAccepted)
-				return
+				return nil
 			}
 			// set terminationGracePeriod to 1 (which is the shorted safe restart period) and delete the VMI pod to trigger a swift restart.
-			err = app.virtCli.CoreV1().Pods(namespace).Delete(context.Background(), vmiPodname, metav1.DeleteOptions{GracePeriodSeconds: pointer.P(int64(1))})
+			err = app.virtCli.CoreV1().Pods(namespace).Delete(ctx, vmiPodname, metav1.DeleteOptions{GracePeriodSeconds: pointer.P(int64(1))})
 			if err != nil {
 				if !errors.IsNotFound(err) {
-					writeError(errors.NewInternalError(err), response)
-					return
+					return errors.NewInternalError(err)
 				}
 			}
 		}
+	}
+
+	return nil
+}
+
+func (app *SubresourceAPIApp) RestartVMRequestHandler(request *restful.Request, response *restful.Response) {
+	name := request.PathParameter("name")
+	namespace := request.PathParameter("namespace")
+
+	bodyStruct := &v1.RestartOptions{}
+	if request.Request.Body != nil {
+		if err := decodeBody(request, bodyStruct); err != nil {
+			writeError(err, response)
+			return
+		}
+	}
+
+	if statusErr := app.RestartVM(request.Request.Context(), namespace, name, bodyStruct); statusErr != nil {
+		writeError(statusErr, response)
+		return
 	}
 
 	response.WriteHeader(http.StatusAccepted)
@@ -538,6 +526,36 @@ func (app *SubresourceAPIApp) SoftRebootVMIRequestHandler(request *restful.Reque
 	app.putRequestHandler(request, response, validate, getURL, false)
 }
 
+func (app *SubresourceAPIApp) MigrateVM(ctx context.Context, namespace, name string, migrateOptions *v1.MigrateOptions) *errors.StatusError {
+	if _, statusErr := app.fetchVirtualMachine(name, namespace); statusErr != nil {
+		return statusErr
+	}
+
+	vmi, statusErr := app.FetchVirtualMachineInstance(namespace, name)
+	if statusErr != nil {
+		return statusErr
+	}
+
+	if vmi.Status.Phase != v1.Running {
+		return errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(vmNotRunning))
+	}
+
+	_, err := app.virtCli.VirtualMachineInstanceMigration(namespace).Create(ctx, &v1.VirtualMachineInstanceMigration{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "kubevirt-migrate-vm-",
+		},
+		Spec: v1.VirtualMachineInstanceMigrationSpec{
+			VMIName:           name,
+			AddedNodeSelector: migrateOptions.AddedNodeSelector,
+		},
+	}, metav1.CreateOptions{DryRun: migrateOptions.DryRun})
+	if err != nil {
+		return errors.NewInternalError(err)
+	}
+
+	return nil
+}
+
 func (app *SubresourceAPIApp) MigrateVMRequestHandler(request *restful.Request, response *restful.Response) {
 	name := request.PathParameter("name")
 	namespace := request.PathParameter("namespace")
@@ -549,41 +567,9 @@ func (app *SubresourceAPIApp) MigrateVMRequestHandler(request *restful.Request, 
 			return
 		}
 	}
-	_, err := app.fetchVirtualMachine(name, namespace)
-	if err != nil {
-		writeError(err, response)
-		return
-	}
 
-	vmi, err := app.FetchVirtualMachineInstance(namespace, name)
-	if err != nil {
-		writeError(err, response)
-		return
-	}
-
-	if vmi.Status.Phase != v1.Running {
-		writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(vmNotRunning)), response)
-		return
-	}
-
-	createMigrationJob := func() *errors.StatusError {
-		_, err := app.virtCli.VirtualMachineInstanceMigration(namespace).Create(context.Background(), &v1.VirtualMachineInstanceMigration{
-			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "kubevirt-migrate-vm-",
-			},
-			Spec: v1.VirtualMachineInstanceMigrationSpec{
-				VMIName:           name,
-				AddedNodeSelector: bodyStruct.AddedNodeSelector,
-			},
-		}, metav1.CreateOptions{DryRun: bodyStruct.DryRun})
-		if err != nil {
-			return errors.NewInternalError(err)
-		}
-		return nil
-	}
-
-	if err = createMigrationJob(); err != nil {
-		writeError(err, response)
+	if statusErr := app.MigrateVM(request.Request.Context(), namespace, name, bodyStruct); statusErr != nil {
+		writeError(statusErr, response)
 		return
 	}
 
@@ -621,16 +607,15 @@ func (app *SubresourceAPIApp) findPod(namespace string, vmi *v1.VirtualMachineIn
 	return "", nil
 }
 
-func (app *SubresourceAPIApp) patchVMStatusStopped(vmi *v1.VirtualMachineInstance, vm *v1.VirtualMachine, response *restful.Response, bodyStruct *v1.StopOptions) (error, error) {
+func (app *SubresourceAPIApp) patchVMStatusStopped(ctx context.Context, vmi *v1.VirtualMachineInstance, vm *v1.VirtualMachine, stopOptions *v1.StopOptions) error {
 	patchBytes, err := getChangeRequestJson(vm,
 		v1.VirtualMachineStateChangeRequest{Action: v1.StopRequest, UID: &vmi.UID})
 	if err != nil {
-		writeError(errors.NewInternalError(err), response)
-		return nil, err
+		return err
 	}
 	log.Log.Object(vm).V(4).Infof(patchingVMStatusFmt, string(patchBytes))
-	_, err = app.virtCli.VirtualMachine(vm.Namespace).PatchStatus(context.Background(), vm.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: bodyStruct.DryRun})
-	return err, nil
+	_, err = app.virtCli.VirtualMachine(vm.Namespace).PatchStatus(ctx, vm.Name, types.JSONPatchType, patchBytes, metav1.PatchOptions{DryRun: stopOptions.DryRun})
+	return err
 }
 
 func getChangeRequestJson(vm *v1.VirtualMachine, changes ...v1.VirtualMachineStateChangeRequest) ([]byte, error) {
