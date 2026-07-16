@@ -31,11 +31,15 @@ import (
 func NewStorageMap(virtClient kubecli.KubevirtClient, clusterConfig *virtconfig.ClusterConfig) map[string]rest.Storage {
 	subresourceApp := subresourcerest.NewSubresourceAPIApp(virtClient, 0, nil, clusterConfig)
 	return map[string]rest.Storage{
-		"virtualmachines":             NewDummyREST(),
-		"virtualmachines/expand-spec": NewExpandSpecREST(virtClient, clusterConfig),
-		"virtualmachines/start":       NewStartREST(subresourceApp),
-		"virtualmachines/stop":        NewStopREST(subresourceApp),
-		"virtualmachines/restart":     NewRestartREST(subresourceApp),
-		"virtualmachines/migrate":     NewMigrateREST(subresourceApp),
+		"virtualmachines":                  NewDummyREST(),
+		"virtualmachines/expand-spec":      NewExpandSpecREST(virtClient, clusterConfig),
+		"virtualmachines/start":            NewStartREST(subresourceApp),
+		"virtualmachines/stop":             NewStopREST(subresourceApp),
+		"virtualmachines/restart":          NewRestartREST(subresourceApp),
+		"virtualmachines/migrate":          NewMigrateREST(subresourceApp),
+		"virtualmachines/addvolume":        NewAddVolumeREST(subresourceApp),
+		"virtualmachines/removevolume":     NewRemoveVolumeREST(subresourceApp),
+		"virtualmachines/memorydump":       NewMemoryDumpREST(subresourceApp),
+		"virtualmachines/removememorydump": NewRemoveMemoryDumpREST(subresourceApp),
 	}
 }

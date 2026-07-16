@@ -3,9 +3,13 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library")
 go_library(
     name = "go_default_library",
     srcs = [
+        "addvolume.go",
         "dummy.go",
         "expandspec.go",
+        "memorydump.go",
         "migrate.go",
+        "removememorydump.go",
+        "removevolume.go",
         "restart.go",
         "start.go",
         "stop.go",

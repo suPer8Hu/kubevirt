@@ -400,7 +400,7 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context, webhookInfo
 	apiGroups := apiserver.APIGroups{}
 	for _, gv := range v1.SubresourceGroupVersions {
 		storage := virtualmachine.NewStorageMap(app.virtCli, app.clusterConfig)
-		for resource, store := range virtualmachineinstance.NewStorageMap(app.virtCli, app.consoleServerPort, app.handlerTLSConfiguration) {
+		for resource, store := range virtualmachineinstance.NewStorageMap(app.virtCli, app.consoleServerPort, app.handlerTLSConfiguration, app.clusterConfig) {
 			storage[resource] = store
 		}
 		apiGroups[gv] = storage

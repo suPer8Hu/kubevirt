@@ -26,13 +26,18 @@ import (
 
 	"kubevirt.io/client-go/kubecli"
 
+	subresourcerest "kubevirt.io/kubevirt/pkg/virt-api/rest"
 	"kubevirt.io/kubevirt/pkg/virt-api/streaming"
+	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
 )
 
-func NewStorageMap(virtClient kubecli.KubevirtClient, consoleServerPort int, tlsConfig *tls.Config) map[string]rest.Storage {
+func NewStorageMap(virtClient kubecli.KubevirtClient, consoleServerPort int, tlsConfig *tls.Config, clusterConfig *virtconfig.ClusterConfig) map[string]rest.Storage {
 	streamer := streaming.NewStreamer(virtClient, consoleServerPort, tlsConfig)
+	subresourceApp := subresourcerest.NewSubresourceAPIApp(virtClient, consoleServerPort, tlsConfig, clusterConfig)
 	return map[string]rest.Storage{
-		"virtualmachineinstances":         NewDummyREST(),
-		"virtualmachineinstances/console": NewConsoleREST(streamer),
+		"virtualmachineinstances":              NewDummyREST(),
+		"virtualmachineinstances/console":      NewConsoleREST(streamer),
+		"virtualmachineinstances/addvolume":    NewAddVolumeREST(subresourceApp),
+		"virtualmachineinstances/removevolume": NewRemoveVolumeREST(subresourceApp),
 	}
 }
