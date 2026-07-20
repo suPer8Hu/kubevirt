@@ -116,12 +116,9 @@ type validation func(*v1.VirtualMachineInstance) (err *errors.StatusError)
 type errorPostProcessing func(*v1.VirtualMachineInstance, error) (err error)
 type URLResolver func(*v1.VirtualMachineInstance, kubecli.VirtHandlerConn) (string, error)
 
-func (app *SubresourceAPIApp) prepareConnection(request *restful.Request, validate validation, getVirtHandlerURL URLResolver) (vmi *v1.VirtualMachineInstance, url string, conn kubecli.VirtHandlerConn, statusError *errors.StatusError) {
+func (app *SubresourceAPIApp) prepareConnection(ctx context.Context, namespace, name string, validate validation, getVirtHandlerURL URLResolver) (vmi *v1.VirtualMachineInstance, url string, conn kubecli.VirtHandlerConn, statusError *errors.StatusError) {
 
-	vmiName := request.PathParameter("name")
-	namespace := request.PathParameter("namespace")
-
-	vmi, statusError = app.fetchAndValidateVirtualMachineInstance(namespace, vmiName, validate)
+	vmi, statusError = app.fetchAndValidateVirtualMachineInstance(ctx, namespace, name, validate)
 	if statusError != nil {
 		return
 	}
@@ -134,9 +131,14 @@ func (app *SubresourceAPIApp) prepareConnection(request *restful.Request, valida
 	return
 }
 
-func (app *SubresourceAPIApp) fetchAndValidateVirtualMachineInstance(namespace, vmiName string, validate validation) (vmi *v1.VirtualMachineInstance, statusError *errors.StatusError) {
-	vmi, statusError = app.FetchVirtualMachineInstance(namespace, vmiName)
-	if statusError != nil {
+func (app *SubresourceAPIApp) fetchAndValidateVirtualMachineInstance(ctx context.Context, namespace, vmiName string, validate validation) (vmi *v1.VirtualMachineInstance, statusError *errors.StatusError) {
+	vmi, err := app.virtCli.VirtualMachineInstance(namespace).Get(ctx, vmiName, k8smetav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			statusError = errors.NewNotFound(v1.Resource("virtualmachineinstance"), vmiName)
+		} else {
+			statusError = errors.NewInternalError(fmt.Errorf("unable to retrieve vmi [%s]: %v", vmiName, err))
+		}
 		log.Log.Reason(statusError).Errorf("Failed to gather vmi %s in namespace %s.", vmiName, namespace)
 		return
 	}
@@ -154,6 +156,18 @@ func (app *SubresourceAPIApp) putRequestHandler(request *restful.Request, respon
 
 func (app *SubresourceAPIApp) putRequestHandlerWithErrorPostProcessing(request *restful.Request, response *restful.Response, preValidate validation, errorPostProcessing errorPostProcessing, getVirtHandlerURL URLResolver, dryRun bool) {
 
+	name := request.PathParameter("name")
+	namespace := request.PathParameter("namespace")
+
+	if statusErr := app.connectVirtHandler(request.Request.Context(), namespace, name, request.Request.Body, preValidate, errorPostProcessing, getVirtHandlerURL, dryRun); statusErr != nil {
+		writeError(statusErr, response)
+	}
+}
+
+// connectVirtHandler validates the VMI, resolves the virt-handler URL and, unless
+// dryRun is set, proxies the request body to virt-handler via a PUT
+func (app *SubresourceAPIApp) connectVirtHandler(ctx context.Context, namespace, name string, body io.ReadCloser, preValidate validation, errorPostProcessing errorPostProcessing, getVirtHandlerURL URLResolver, dryRun bool) *errors.StatusError {
+
 	if preValidate == nil {
 		preValidate = func(vmi *v1.VirtualMachineInstance) *errors.StatusError { return nil }
 	}
@@ -161,27 +175,27 @@ func (app *SubresourceAPIApp) putRequestHandlerWithErrorPostProcessing(request *
 		errorPostProcessing = func(vmi *v1.VirtualMachineInstance, err error) error { return err }
 	}
 
-	vmi, url, conn, statusErr := app.prepareConnection(request, preValidate, getVirtHandlerURL)
+	vmi, url, conn, statusErr := app.prepareConnection(ctx, namespace, name, preValidate, getVirtHandlerURL)
 	if statusErr != nil {
 		err := errorPostProcessing(vmi, fmt.Errorf("%s", statusErr.ErrStatus.Message))
 		statusErr.ErrStatus.Message = err.Error()
-		writeError(statusErr, response)
-		return
+		return statusErr
 	}
 
 	if dryRun {
-		return
+		return nil
 	}
-	err := conn.Put(url, request.Request.Body)
-	if err != nil {
+	if err := conn.Put(url, body); err != nil {
 		err = errorPostProcessing(vmi, err)
-		writeError(errors.NewInternalError(err), response)
-		return
+		return errors.NewInternalError(err)
 	}
+	return nil
 }
 
 func (app *SubresourceAPIApp) httpGetRequestHandler(request *restful.Request, response *restful.Response, validate validation, getURL URLResolver, v interface{}) {
-	_, url, conn, err := app.prepareConnection(request, validate, getURL)
+	name := request.PathParameter("name")
+	namespace := request.PathParameter("namespace")
+	_, url, conn, err := app.prepareConnection(request.Request.Context(), namespace, name, validate, getURL)
 	if err != nil {
 		log.Log.Errorf(prepConnectionErrFmt, err.Error())
 		response.WriteError(http.StatusInternalServerError, err)
@@ -205,7 +219,9 @@ func (app *SubresourceAPIApp) httpGetRequestHandler(request *restful.Request, re
 }
 
 func (app *SubresourceAPIApp) httpGetRequestBinaryHandler(request *restful.Request, response *restful.Response, validate validation, getURL URLResolver) {
-	_, url, conn, err := app.prepareConnection(request, validate, getURL)
+	name := request.PathParameter("name")
+	namespace := request.PathParameter("namespace")
+	_, url, conn, err := app.prepareConnection(request.Request.Context(), namespace, name, validate, getURL)
 	if err != nil {
 		log.Log.Errorf(prepConnectionErrFmt, err.Error())
 		response.WriteError(http.StatusInternalServerError, err)
@@ -353,7 +369,11 @@ func (app *SubresourceAPIApp) FilesystemList(request *restful.Request, response 
 }
 
 func decodeBody(request *restful.Request, bodyStruct interface{}) *errors.StatusError {
-	err := yaml.NewYAMLOrJSONDecoder(request.Request.Body, 1024).Decode(&bodyStruct)
+	return decodeBodyReader(request.Request.Body, bodyStruct)
+}
+
+func decodeBodyReader(body io.Reader, bodyStruct interface{}) *errors.StatusError {
+	err := yaml.NewYAMLOrJSONDecoder(body, 1024).Decode(bodyStruct)
 	switch err {
 	case io.EOF, nil:
 		return nil

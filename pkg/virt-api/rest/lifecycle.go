@@ -22,6 +22,7 @@ package rest
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -266,8 +267,9 @@ func (app *SubresourceAPIApp) StopVMRequestHandler(request *restful.Request, res
 	response.WriteHeader(http.StatusAccepted)
 }
 
-func (app *SubresourceAPIApp) PauseVMIRequestHandler(request *restful.Request, response *restful.Response) {
-
+// PauseVMI pauses a running VMI. The optional PauseOptions body is decoded to
+// detect a dry-run request before the body is proxied to virt-handler
+func (app *SubresourceAPIApp) PauseVMI(ctx context.Context, namespace, name string, body io.ReadCloser) *errors.StatusError {
 	validate := func(vmi *v1.VirtualMachineInstance) *errors.StatusError {
 		if vmi.Status.Phase != v1.Running {
 			return errors.NewConflict(v1.Resource("virtualmachineinstance"), vmi.Name, fmt.Errorf(vmNotRunning))
@@ -287,38 +289,38 @@ func (app *SubresourceAPIApp) PauseVMIRequestHandler(request *restful.Request, r
 	}
 
 	bodyStruct := &v1.PauseOptions{}
-	if request.Request.Body != nil {
-		if err := decodeBody(request, bodyStruct); err != nil {
-			writeError(err, response)
-			return
+	if body != nil {
+		if err := decodeBodyReader(body, bodyStruct); err != nil {
+			return err
 		}
 	}
 	var dryRun bool
 	if len(bodyStruct.DryRun) > 0 && bodyStruct.DryRun[0] == metav1.DryRunAll {
 		dryRun = true
 	}
-	app.putRequestHandler(request, response, validate, getURL, dryRun)
-
+	return app.connectVirtHandler(ctx, namespace, name, body, validate, nil, getURL, dryRun)
 }
 
-func (app *SubresourceAPIApp) UnpauseVMIRequestHandler(request *restful.Request, response *restful.Response) {
-
+func (app *SubresourceAPIApp) PauseVMIRequestHandler(request *restful.Request, response *restful.Response) {
 	name := request.PathParameter("name")
 	namespace := request.PathParameter("namespace")
+	if statusErr := app.PauseVMI(request.Request.Context(), namespace, name, request.Request.Body); statusErr != nil {
+		writeError(statusErr, response)
+	}
+}
 
+// UnpauseVMI resumes a paused VMI. It first ensures the owning VM (if any) has
+// no snapshot in progress then proxies the request to virt-handler
+func (app *SubresourceAPIApp) UnpauseVMI(ctx context.Context, namespace, name string, body io.ReadCloser) *errors.StatusError {
 	// Check VM status - only continue if VM doesn't exist or if it exists without snapshot in progress
-	vm, err := app.fetchVirtualMachine(name, namespace)
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			writeError(err, response)
-			return
+	vm, statusErr := app.fetchVirtualMachine(name, namespace)
+	if statusErr != nil {
+		if !errors.IsNotFound(statusErr) {
+			return statusErr
 		}
-	} else {
+	} else if vm.Status.SnapshotInProgress != nil {
 		// VM exists - check if snapshot is in progress
-		if vm.Status.SnapshotInProgress != nil {
-			writeError(errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(vmSnapshotInprogress)), response)
-			return
-		}
+		return errors.NewConflict(v1.Resource("virtualmachine"), name, fmt.Errorf(vmSnapshotInprogress))
 	}
 
 	validate := func(vmi *v1.VirtualMachineInstance) *errors.StatusError {
@@ -336,22 +338,29 @@ func (app *SubresourceAPIApp) UnpauseVMIRequestHandler(request *restful.Request,
 	}
 
 	bodyStruct := &v1.UnpauseOptions{}
-	if request.Request.Body != nil {
-		if err := decodeBody(request, bodyStruct); err != nil {
-			writeError(err, response)
-			return
+	if body != nil {
+		if err := decodeBodyReader(body, bodyStruct); err != nil {
+			return err
 		}
 	}
 	var dryRun bool
 	if len(bodyStruct.DryRun) > 0 && bodyStruct.DryRun[0] == metav1.DryRunAll {
 		dryRun = true
 	}
-	app.putRequestHandler(request, response, validate, getURL, dryRun)
-
+	return app.connectVirtHandler(ctx, namespace, name, body, validate, nil, getURL, dryRun)
 }
 
-func (app *SubresourceAPIApp) FreezeVMIRequestHandler(request *restful.Request, response *restful.Response) {
+func (app *SubresourceAPIApp) UnpauseVMIRequestHandler(request *restful.Request, response *restful.Response) {
+	name := request.PathParameter("name")
+	namespace := request.PathParameter("namespace")
+	if statusErr := app.UnpauseVMI(request.Request.Context(), namespace, name, request.Request.Body); statusErr != nil {
+		writeError(statusErr, response)
+	}
+}
 
+// FreezeVMI freezes the filesystems of a running VMI
+// The request body is proxied unchanged to virt-handler
+func (app *SubresourceAPIApp) FreezeVMI(ctx context.Context, namespace, name string, body io.ReadCloser) *errors.StatusError {
 	validate := func(vmi *v1.VirtualMachineInstance) *errors.StatusError {
 		if vmi.Status.Phase != v1.Running {
 			return errors.NewConflict(v1.Resource("virtualmachineinstance"), vmi.Name, fmt.Errorf(vmNotRunning))
@@ -363,11 +372,19 @@ func (app *SubresourceAPIApp) FreezeVMIRequestHandler(request *restful.Request, 
 		return conn.FreezeURI(vmi)
 	}
 
-	app.putRequestHandler(request, response, validate, getURL, false)
+	return app.connectVirtHandler(ctx, namespace, name, body, validate, nil, getURL, false)
 }
 
-func (app *SubresourceAPIApp) UnfreezeVMIRequestHandler(request *restful.Request, response *restful.Response) {
+func (app *SubresourceAPIApp) FreezeVMIRequestHandler(request *restful.Request, response *restful.Response) {
+	name := request.PathParameter("name")
+	namespace := request.PathParameter("namespace")
+	if statusErr := app.FreezeVMI(request.Request.Context(), namespace, name, request.Request.Body); statusErr != nil {
+		writeError(statusErr, response)
+	}
+}
 
+// UnfreezeVMI thaws the filesystems of a running VMI.
+func (app *SubresourceAPIApp) UnfreezeVMI(ctx context.Context, namespace, name string, body io.ReadCloser) *errors.StatusError {
 	validate := func(vmi *v1.VirtualMachineInstance) *errors.StatusError {
 		if vmi.Status.Phase != v1.Running {
 			return errors.NewConflict(v1.Resource("virtualmachineinstance"), vmi.Name, fmt.Errorf(vmiNotRunning))
@@ -377,12 +394,19 @@ func (app *SubresourceAPIApp) UnfreezeVMIRequestHandler(request *restful.Request
 	getURL := func(vmi *v1.VirtualMachineInstance, conn kubecli.VirtHandlerConn) (string, error) {
 		return conn.UnfreezeURI(vmi)
 	}
-	app.putRequestHandler(request, response, validate, getURL, false)
-
+	return app.connectVirtHandler(ctx, namespace, name, body, validate, nil, getURL, false)
 }
 
-func (app *SubresourceAPIApp) ResetVMIRequestHandler(request *restful.Request, response *restful.Response) {
+func (app *SubresourceAPIApp) UnfreezeVMIRequestHandler(request *restful.Request, response *restful.Response) {
+	name := request.PathParameter("name")
+	namespace := request.PathParameter("namespace")
+	if statusErr := app.UnfreezeVMI(request.Request.Context(), namespace, name, request.Request.Body); statusErr != nil {
+		writeError(statusErr, response)
+	}
+}
 
+// ResetVMI triggers a reset of a running VMI.
+func (app *SubresourceAPIApp) ResetVMI(ctx context.Context, namespace, name string, body io.ReadCloser) *errors.StatusError {
 	// Post process any error responses in order to append human
 	// readable explanation for why the reset may have failed.
 	errorPostProcessing := func(vmi *v1.VirtualMachineInstance, err error) error {
@@ -398,7 +422,15 @@ func (app *SubresourceAPIApp) ResetVMIRequestHandler(request *restful.Request, r
 		return conn.ResetURI(vmi)
 	}
 
-	app.putRequestHandlerWithErrorPostProcessing(request, response, nil, errorPostProcessing, getURL, false)
+	return app.connectVirtHandler(ctx, namespace, name, body, nil, errorPostProcessing, getURL, false)
+}
+
+func (app *SubresourceAPIApp) ResetVMIRequestHandler(request *restful.Request, response *restful.Response) {
+	name := request.PathParameter("name")
+	namespace := request.PathParameter("namespace")
+	if statusErr := app.ResetVMI(request.Request.Context(), namespace, name, request.Request.Body); statusErr != nil {
+		writeError(statusErr, response)
+	}
 }
 
 func (app *SubresourceAPIApp) RestartVM(ctx context.Context, namespace, name string, restartOptions *v1.RestartOptions) *errors.StatusError {
@@ -501,8 +533,8 @@ func (app *SubresourceAPIApp) RestartVMRequestHandler(request *restful.Request, 
 	response.WriteHeader(http.StatusAccepted)
 }
 
-func (app *SubresourceAPIApp) SoftRebootVMIRequestHandler(request *restful.Request, response *restful.Response) {
-
+// SoftRebootVMI issues an ACPI soft reboot of a running VMI
+func (app *SubresourceAPIApp) SoftRebootVMI(ctx context.Context, namespace, name string, body io.ReadCloser) *errors.StatusError {
 	validate := func(vmi *v1.VirtualMachineInstance) *errors.StatusError {
 		if vmi.Status.Phase != v1.Running {
 			return errors.NewConflict(v1.Resource("virtualmachineinstance"), vmi.Name, fmt.Errorf(vmNotRunning))
@@ -523,7 +555,15 @@ func (app *SubresourceAPIApp) SoftRebootVMIRequestHandler(request *restful.Reque
 		return conn.SoftRebootURI(vmi)
 	}
 
-	app.putRequestHandler(request, response, validate, getURL, false)
+	return app.connectVirtHandler(ctx, namespace, name, body, validate, nil, getURL, false)
+}
+
+func (app *SubresourceAPIApp) SoftRebootVMIRequestHandler(request *restful.Request, response *restful.Response) {
+	name := request.PathParameter("name")
+	namespace := request.PathParameter("namespace")
+	if statusErr := app.SoftRebootVMI(request.Request.Context(), namespace, name, request.Request.Body); statusErr != nil {
+		writeError(statusErr, response)
+	}
 }
 
 func (app *SubresourceAPIApp) MigrateVM(ctx context.Context, namespace, name string, migrateOptions *v1.MigrateOptions) *errors.StatusError {
