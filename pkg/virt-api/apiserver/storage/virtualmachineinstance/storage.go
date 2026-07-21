@@ -35,15 +35,18 @@ func NewStorageMap(virtClient kubecli.KubevirtClient, consoleServerPort int, tls
 	streamer := streaming.NewStreamer(virtClient, consoleServerPort, tlsConfig)
 	subresourceApp := subresourcerest.NewSubresourceAPIApp(virtClient, consoleServerPort, tlsConfig, clusterConfig)
 	return map[string]rest.Storage{
-		"virtualmachineinstances":              NewDummyREST(),
-		"virtualmachineinstances/console":      NewConsoleREST(streamer),
-		"virtualmachineinstances/addvolume":    NewAddVolumeREST(subresourceApp),
-		"virtualmachineinstances/removevolume": NewRemoveVolumeREST(subresourceApp),
-		"virtualmachineinstances/freeze":       NewFreezeREST(subresourceApp),
-		"virtualmachineinstances/unfreeze":     NewUnfreezeREST(subresourceApp),
-		"virtualmachineinstances/pause":        NewPauseREST(subresourceApp),
-		"virtualmachineinstances/unpause":      NewUnpauseREST(subresourceApp),
-		"virtualmachineinstances/reset":        NewResetREST(subresourceApp),
-		"virtualmachineinstances/softreboot":   NewSoftRebootREST(subresourceApp),
+		"virtualmachineinstances":                NewDummyREST(),
+		"virtualmachineinstances/console":        NewConsoleREST(streamer),
+		"virtualmachineinstances/addvolume":      NewAddVolumeREST(subresourceApp),
+		"virtualmachineinstances/removevolume":   NewRemoveVolumeREST(subresourceApp),
+		"virtualmachineinstances/freeze":         NewFreezeREST(subresourceApp),
+		"virtualmachineinstances/unfreeze":       NewUnfreezeREST(subresourceApp),
+		"virtualmachineinstances/pause":          NewPauseREST(subresourceApp),
+		"virtualmachineinstances/unpause":        NewUnpauseREST(subresourceApp),
+		"virtualmachineinstances/reset":          NewResetREST(subresourceApp),
+		"virtualmachineinstances/softreboot":     NewSoftRebootREST(subresourceApp),
+		"virtualmachineinstances/guestosinfo":    NewGuestOSInfoREST(subresourceApp),
+		"virtualmachineinstances/userlist":       NewUserListREST(subresourceApp),
+		"virtualmachineinstances/filesystemlist": NewFilesystemListREST(subresourceApp),
 	}
 }
