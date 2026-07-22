@@ -48,5 +48,6 @@ func NewStorageMap(virtClient kubecli.KubevirtClient, consoleServerPort int, tls
 		"virtualmachineinstances/guestosinfo":    NewGuestOSInfoREST(subresourceApp),
 		"virtualmachineinstances/userlist":       NewUserListREST(subresourceApp),
 		"virtualmachineinstances/filesystemlist": NewFilesystemListREST(subresourceApp),
+		"virtualmachineinstances/objectgraph":    NewObjectGraphREST(subresourceApp),
 	}
 }

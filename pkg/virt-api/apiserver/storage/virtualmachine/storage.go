@@ -41,5 +41,6 @@ func NewStorageMap(virtClient kubecli.KubevirtClient, clusterConfig *virtconfig.
 		"virtualmachines/removevolume":     NewRemoveVolumeREST(subresourceApp),
 		"virtualmachines/memorydump":       NewMemoryDumpREST(subresourceApp),
 		"virtualmachines/removememorydump": NewRemoveMemoryDumpREST(subresourceApp),
+		"virtualmachines/objectgraph":      NewObjectGraphREST(subresourceApp),
 	}
 }

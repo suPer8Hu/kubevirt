@@ -8,6 +8,7 @@ go_library(
         "expandspec.go",
         "memorydump.go",
         "migrate.go",
+        "objectgraph.go",
         "removememorydump.go",
         "removevolume.go",
         "restart.go",

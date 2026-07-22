@@ -9,6 +9,7 @@ go_library(
         "filesystemlist.go",
         "freeze.go",
         "guestosinfo.go",
+        "objectgraph.go",
         "pause.go",
         "removevolume.go",
         "reset.go",
