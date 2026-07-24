@@ -17,38 +17,45 @@
  *
  */
 
-package rest
+package streaming
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 
-	restful "github.com/emicklei/go-restful/v3"
 	"k8s.io/apimachinery/pkg/api/errors"
 
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
 	"kubevirt.io/client-go/log"
+
+	apimetrics "kubevirt.io/kubevirt/pkg/monitoring/metrics/virt-api"
 )
 
-func (app *SubresourceAPIApp) ScreenshotRequestHandler(request *restful.Request, response *restful.Response) {
-	getURL := func(vmi *v1.VirtualMachineInstance, conn kubecli.VirtHandlerConn) (string, error) {
-		return conn.ScreenshotURI(vmi)
-	}
+// StreamVNC proxies the VNC display of the named VMI as a raw, bidirectional
+// websocket stream to virt-handler
+func (s *Streamer) StreamVNC(ctx context.Context, namespace, name string, preserveSession bool, w http.ResponseWriter, req *http.Request) *errors.StatusError {
+	activeConnectionMetric := apimetrics.NewActiveVNCConnection(namespace, name)
+	defer activeConnectionMetric.Dec()
+	defer apimetrics.SetVMILastConnectionTimestamp(namespace, name)
 
-	// Screenshot without Display fails with:
-	//   `Requested operation is not valid: no screens to take screenshot from`
-	app.httpGetRequestBinaryHandler(request, response, vmiHasDisplay, getURL)
+	return s.streamRaw(ctx, namespace, name, w, req, validateVMIForVNC,
+		func(vmi *v1.VirtualMachineInstance, conn kubecli.VirtHandlerConn) (string, error) {
+			return conn.VNCURI(vmi, preserveSession)
+		},
+	)
 }
 
-func vmiHasDisplay(vmi *v1.VirtualMachineInstance) *errors.StatusError {
-	// If there are no graphics devices present, we can't proceed
+func validateVMIForVNC(vmi *v1.VirtualMachineInstance) *errors.StatusError {
+	// can't proceed if there are no graphics devices present
 	if vmi.Spec.Domain.Devices.AutoattachGraphicsDevice != nil && !*vmi.Spec.Domain.Devices.AutoattachGraphicsDevice {
 		err := fmt.Errorf("No graphics devices are present.")
 		log.Log.Object(vmi).Reason(err).Error("Can't establish VNC connection.")
 		return errors.NewBadRequest(err.Error())
 	}
 	if !vmi.IsRunning() {
-		return errors.NewBadRequest(vmiNotRunning)
+		return errors.NewBadRequest("VMI is not running")
 	}
 	return nil
 }

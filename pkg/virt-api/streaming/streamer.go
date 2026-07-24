@@ -110,9 +110,8 @@ func (s *Streamer) streamRaw(ctx context.Context, namespace, name string, w http
 	return nil
 }
 
-// dialVirtHandler resolves the virt-handler endpoint for the VMI
-// and returns the net.Conn of the websocket connection
-func (s *Streamer) dialVirtHandler(ctx context.Context, namespace, name string, validate vmiValidator, getURL urlResolver) (net.Conn, *errors.StatusError) {
+// fetchAndValidateVMI retrieves the named VMI and runs the subresource specific validation
+func (s *Streamer) fetchAndValidateVMI(ctx context.Context, namespace, name string, validate vmiValidator) (*v1.VirtualMachineInstance, *errors.StatusError) {
 	vmi, err := s.virtCli.VirtualMachineInstance(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -122,6 +121,17 @@ func (s *Streamer) dialVirtHandler(ctx context.Context, namespace, name string, 
 	}
 
 	if statusErr := validate(vmi); statusErr != nil {
+		return nil, statusErr
+	}
+
+	return vmi, nil
+}
+
+// dialVirtHandler resolves the virt-handler endpoint for the VMI
+// and returns the net.Conn of the websocket connection
+func (s *Streamer) dialVirtHandler(ctx context.Context, namespace, name string, validate vmiValidator, getURL urlResolver) (net.Conn, *errors.StatusError) {
+	vmi, statusErr := s.fetchAndValidateVMI(ctx, namespace, name, validate)
+	if statusErr != nil {
 		return nil, statusErr
 	}
 

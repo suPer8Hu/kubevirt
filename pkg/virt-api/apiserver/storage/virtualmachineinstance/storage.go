@@ -37,6 +37,10 @@ func NewStorageMap(virtClient kubecli.KubevirtClient, consoleServerPort int, tls
 	return map[string]rest.Storage{
 		"virtualmachineinstances":                NewDummyREST(),
 		"virtualmachineinstances/console":        NewConsoleREST(streamer),
+		"virtualmachineinstances/vnc":            NewVNCREST(streamer),
+		"virtualmachineinstances/usbredir":       NewUSBRedirREST(streamer),
+		"virtualmachineinstances/vsock":          NewVSOCKREST(streamer),
+		"virtualmachineinstances/portforward":    NewPortForwardREST(streamer),
 		"virtualmachineinstances/addvolume":      NewAddVolumeREST(subresourceApp),
 		"virtualmachineinstances/removevolume":   NewRemoveVolumeREST(subresourceApp),
 		"virtualmachineinstances/freeze":         NewFreezeREST(subresourceApp),
