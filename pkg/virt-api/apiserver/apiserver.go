@@ -27,6 +27,7 @@ import (
 	"context"
 	"flag"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/spf13/pflag"
@@ -207,7 +208,15 @@ func (a *APIServer) Run(
 			}
 
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if matchesBridgePath(r.URL.Path) {
+				// Functest helpers build https://host:port/%s with a leading-slash
+				// path, which yields "//healthz". Clean so bridge exact matches
+				// still hit DefaultServeMux / restful routes registered as /healthz.
+				cleaned := path.Clean(r.URL.Path)
+				if matchesBridgePath(cleaned) {
+					if r.URL.Path != cleaned {
+						r = r.Clone(r.Context())
+						r.URL.Path = cleaned
+					}
 					a.fallbackHandler.ServeHTTP(w, r)
 					return
 				}
@@ -299,15 +308,16 @@ func newPathMatcher(paths []string) func(string) bool {
 		if strings.HasSuffix(p, "*") {
 			prefixes = append(prefixes, strings.TrimSuffix(p, "*"))
 		} else {
-			exact[p] = struct{}{}
+			exact[path.Clean(p)] = struct{}{}
 		}
 	}
-	return func(path string) bool {
-		if _, ok := exact[path]; ok {
+	return func(requestPath string) bool {
+		requestPath = path.Clean(requestPath)
+		if _, ok := exact[requestPath]; ok {
 			return true
 		}
 		for _, prefix := range prefixes {
-			if strings.HasPrefix(path, prefix) {
+			if strings.HasPrefix(requestPath, prefix) {
 				return true
 			}
 		}

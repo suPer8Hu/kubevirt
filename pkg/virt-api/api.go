@@ -31,6 +31,7 @@ import (
 
 	kvtls "kubevirt.io/kubevirt/pkg/util/tls"
 
+	restful "github.com/emicklei/go-restful/v3"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	flag "github.com/spf13/pflag"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,6 +51,7 @@ import (
 
 	"kubevirt.io/kubevirt/pkg/certificates/bootstrap"
 	"kubevirt.io/kubevirt/pkg/controller"
+	"kubevirt.io/kubevirt/pkg/healthz"
 	clientmetrics "kubevirt.io/kubevirt/pkg/monitoring/metrics/common/client"
 	metrics "kubevirt.io/kubevirt/pkg/monitoring/metrics/virt-api"
 	netadmitter "kubevirt.io/kubevirt/pkg/network/admitter"
@@ -118,6 +120,8 @@ type virtAPIApp struct {
 }
 
 var _ service.Service = &virtAPIApp{}
+
+var apiHealthVersion = new(healthz.KubeApiHealthzVersion)
 
 func NewVirtApi() VirtApi {
 
@@ -270,6 +274,14 @@ func (app *virtAPIApp) Run() {
 	kubeInformerFactory := controller.NewKubeInformerFactory(app.virtCli.RestClient(), app.virtCli, app.aggregatorClient, app.namespace)
 
 	kubeVirtInformer := kubeInformerFactory.KubeVirt()
+	// A broken watch means the cached config may be stale, so the healthz payload
+	// has to re-resolve the Kubernetes API version on the next probe.
+	if err := kubeVirtInformer.SetWatchErrorHandler(func(r *cache.Reflector, err error) {
+		apiHealthVersion.Clear()
+		cache.DefaultWatchErrorHandler(context.TODO(), r, err)
+	}); err != nil {
+		panic(err)
+	}
 
 	kubeInformerFactory.KubeVirtCAConfigMap()
 	crdInformer := kubeInformerFactory.CRD()
@@ -343,6 +355,21 @@ func (app *virtAPIApp) registerLegacyWebhookMux(webhookInformers *webhooks.Infor
 	app.registerMutatingWebhook(webhookInformers)
 	app.registerValidatingWebhooks(webhookInformers)
 	http.Handle("/metrics", promhttp.Handler())
+	http.Handle("/healthz", kubevirtHealthzHandler(app.clusterConfig))
+}
+
+// LEGACY(virt-api-migration): GenericAPIServer already owns /healthz, but its payload
+// is a plain "ok" while KubeVirt clients expect the config-resource-version document.
+// Keep the go-restful implementation on the bridge until it is ported to a plain handler.
+func kubevirtHealthzHandler(clusterConfig *virtconfig.ClusterConfig) http.Handler {
+	ws := new(restful.WebService)
+	ws.Route(ws.GET("/healthz").
+		To(healthz.KubeConnectionHealthzFuncFactory(clusterConfig, apiHealthVersion)).
+		Doc("Health endpoint"))
+
+	container := restful.NewContainer()
+	container.Add(ws)
+	return container
 }
 
 func (app *virtAPIApp) signalAwareContext() context.Context {
@@ -423,6 +450,7 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context, webhookInfo
 func legacyBridgePaths() []string {
 	return []string{
 		"/metrics",
+		"/healthz",
 
 		// Mutating webhooks.
 		components.VMMutatePath,
