@@ -170,94 +170,171 @@ func (app *virtAPIApp) prepareCertManager() {
 	app.handlerCertManager = bootstrap.NewFileCertificateManager(app.handlerCertFilePath, app.handlerKeyFilePath)
 }
 
-// LEGACY(virt-api-migration): registered on http.DefaultServeMux and served through
-// the bridge. Migrate to apiserver.MuxHandler (see VMValidatePath) and remove
-func (app *virtAPIApp) registerValidatingWebhooks(informers *webhooks.Informers) {
-	http.HandleFunc(components.VMICreateValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMICreate(w, r, app.clusterConfig, app.kubeVirtServiceAccounts,
-			func(field *field.Path, vmiSpec *v1.VirtualMachineInstanceSpec, clusterCfg *virtconfig.ClusterConfig) []metav1.StatusCause {
-				return netadmitter.Validate(field, vmiSpec, clusterCfg)
-			},
-		)
-	})
-	http.HandleFunc(components.VMIUpdateValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMIUpdate(w, r, app.clusterConfig, app.kubeVirtServiceAccounts)
-	})
-	http.HandleFunc(components.VMIRSValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMIRS(w, r, app.clusterConfig)
-	})
-	http.HandleFunc(components.VMPoolValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMPool(w, r, app.clusterConfig, app.kubeVirtServiceAccounts)
-	})
-	http.HandleFunc(components.VMIPresetValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMIPreset(w, r)
-	})
-	http.HandleFunc(components.MigrationCreateValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeMigrationCreate(w, r, app.clusterConfig, app.virtCli, app.kubeVirtServiceAccounts)
-	})
-	http.HandleFunc(components.MigrationUpdateValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeMigrationUpdate(w, r)
-	})
-	http.HandleFunc(components.VMSnapshotValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMSnapshots(w, r, app.clusterConfig, app.virtCli)
-	})
-	http.HandleFunc(components.VMRestoreValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMRestores(w, r, app.clusterConfig, app.virtCli, informers)
-	})
-	http.HandleFunc(components.VMBackupValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMBackups(w, r, app.clusterConfig, app.virtCli, informers)
-	})
-	http.HandleFunc(components.VMBackupTrackerValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMBackupTrackers(w, r, app.clusterConfig)
-	})
-	http.HandleFunc(components.VMExportValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVMExports(w, r, app.clusterConfig)
-	})
-	http.HandleFunc(components.VMInstancetypeValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVmInstancetypes(w, r)
-	})
-	http.HandleFunc(components.VMClusterInstancetypeValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVmClusterInstancetypes(w, r)
-	})
-	http.HandleFunc(components.VMPreferenceValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVmPreferences(w, r)
-	})
-	http.HandleFunc(components.VMClusterPreferenceValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVmClusterPreferences(w, r)
-	})
-	http.HandleFunc(components.StatusValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeStatusValidation(w, r, app.clusterConfig, app.virtCli, informers, app.kubeVirtServiceAccounts)
-	})
-	http.HandleFunc(components.PodEvictionValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServePodEvictionInterceptor(w, r, app.clusterConfig, app.virtCli)
-	})
-	http.HandleFunc(components.MigrationPolicyCreateValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeMigrationPolicies(w, r)
-	})
-	http.HandleFunc(components.VMCloneCreateValidatePath, func(w http.ResponseWriter, r *http.Request) {
-		validating_webhook.ServeVirtualMachineClones(w, r, app.clusterConfig, app.virtCli)
-	})
-}
-
-// LEGACY(virt-api-migration): registered on http.DefaultServeMux and served through
-// the bridge. Migrate to apiserver.MuxHandler and remove
-func (app *virtAPIApp) registerMutatingWebhook(informers *webhooks.Informers) {
-
-	http.HandleFunc(components.VMMutatePath, func(w http.ResponseWriter, r *http.Request) {
-		mutating_webhook.ServeVMs(w, r, app.clusterConfig, app.virtCli)
-	})
-	http.HandleFunc(components.VMIMutatePath, func(w http.ResponseWriter, r *http.Request) {
-		mutating_webhook.ServeVMIs(w, r, app.clusterConfig, informers, app.kubeVirtServiceAccounts)
-	})
-	http.HandleFunc(components.MigrationMutatePath, func(w http.ResponseWriter, r *http.Request) {
-		mutating_webhook.ServeMigrationCreate(w, r)
-	})
-	http.HandleFunc(components.VMCloneCreateMutatePath, func(w http.ResponseWriter, r *http.Request) {
-		mutating_webhook.ServeClones(w, r)
-	})
-	http.HandleFunc(components.VirtLauncherPodMutatePath, func(w http.ResponseWriter, r *http.Request) {
-		mutating_webhook.ServeVirtLauncherPods(w, r, app.clusterConfig, app.virtCli)
-	})
+// webhookMuxHandlers returns the admission webhooks served directly from the
+// GenericAPIServer's NonGoRestfulMux
+func (app *virtAPIApp) webhookMuxHandlers(informers *webhooks.Informers) []apiserver.MuxHandler {
+	return []apiserver.MuxHandler{
+		{
+			Path: components.VMValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMs(w, r, app.clusterConfig, app.virtCli, informers, app.kubeVirtServiceAccounts)
+			}),
+		},
+		{
+			Path: components.VMMutatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mutating_webhook.ServeVMs(w, r, app.clusterConfig, app.virtCli)
+			}),
+		},
+		{
+			Path: components.VMIMutatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mutating_webhook.ServeVMIs(w, r, app.clusterConfig, informers, app.kubeVirtServiceAccounts)
+			}),
+		},
+		{
+			Path: components.MigrationMutatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mutating_webhook.ServeMigrationCreate(w, r)
+			}),
+		},
+		{
+			Path: components.VMCloneCreateMutatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mutating_webhook.ServeClones(w, r)
+			}),
+		},
+		{
+			Path: components.VirtLauncherPodMutatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mutating_webhook.ServeVirtLauncherPods(w, r, app.clusterConfig, app.virtCli)
+			}),
+		},
+		{
+			Path: components.VMICreateValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMICreate(w, r, app.clusterConfig, app.kubeVirtServiceAccounts,
+					func(field *field.Path, vmiSpec *v1.VirtualMachineInstanceSpec, clusterCfg *virtconfig.ClusterConfig) []metav1.StatusCause {
+						return netadmitter.Validate(field, vmiSpec, clusterCfg)
+					},
+				)
+			}),
+		},
+		{
+			Path: components.VMIUpdateValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMIUpdate(w, r, app.clusterConfig, app.kubeVirtServiceAccounts)
+			}),
+		},
+		{
+			Path: components.VMIRSValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMIRS(w, r, app.clusterConfig)
+			}),
+		},
+		{
+			Path: components.VMPoolValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMPool(w, r, app.clusterConfig, app.kubeVirtServiceAccounts)
+			}),
+		},
+		{
+			Path: components.VMIPresetValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMIPreset(w, r)
+			}),
+		},
+		{
+			Path: components.MigrationCreateValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeMigrationCreate(w, r, app.clusterConfig, app.virtCli, app.kubeVirtServiceAccounts)
+			}),
+		},
+		{
+			Path: components.MigrationUpdateValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeMigrationUpdate(w, r)
+			}),
+		},
+		{
+			Path: components.VMSnapshotValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMSnapshots(w, r, app.clusterConfig, app.virtCli)
+			}),
+		},
+		{
+			Path: components.VMRestoreValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMRestores(w, r, app.clusterConfig, app.virtCli, informers)
+			}),
+		},
+		{
+			Path: components.VMBackupValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMBackups(w, r, app.clusterConfig, app.virtCli, informers)
+			}),
+		},
+		{
+			Path: components.VMBackupTrackerValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMBackupTrackers(w, r, app.clusterConfig)
+			}),
+		},
+		{
+			Path: components.VMExportValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVMExports(w, r, app.clusterConfig)
+			}),
+		},
+		{
+			Path: components.VMInstancetypeValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVmInstancetypes(w, r)
+			}),
+		},
+		{
+			Path: components.VMClusterInstancetypeValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVmClusterInstancetypes(w, r)
+			}),
+		},
+		{
+			Path: components.VMPreferenceValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVmPreferences(w, r)
+			}),
+		},
+		{
+			Path: components.VMClusterPreferenceValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVmClusterPreferences(w, r)
+			}),
+		},
+		{
+			Path: components.StatusValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeStatusValidation(w, r, app.clusterConfig, app.virtCli, informers, app.kubeVirtServiceAccounts)
+			}),
+		},
+		{
+			Path: components.PodEvictionValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServePodEvictionInterceptor(w, r, app.clusterConfig, app.virtCli)
+			}),
+		},
+		{
+			Path: components.MigrationPolicyCreateValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeMigrationPolicies(w, r)
+			}),
+		},
+		{
+			Path: components.VMCloneCreateValidatePath,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				validating_webhook.ServeVirtualMachineClones(w, r, app.clusterConfig, app.virtCli)
+			}),
+		},
+	}
 }
 
 func (app *virtAPIApp) Run() {
@@ -333,7 +410,7 @@ func (app *virtAPIApp) Run() {
 	go app.handlerCertManager.Start()
 
 	app.setupHandlerTLS(kubeInformerFactory)
-	app.registerLegacyWebhookMux(webhookInformers)
+	app.registerLegacyWebhookMux()
 	metrics.SetVirtAPIReady()
 
 	ctx := app.signalAwareContext()
@@ -349,11 +426,8 @@ func (app *virtAPIApp) setupHandlerTLS(informerFactory controller.KubeInformerFa
 	app.handlerTLSConfiguration = kvtls.SetupTLSForVirtHandlerClients(kubevirtCAManager, app.handlerCertManager, app.externallyManaged)
 }
 
-// LEGACY(virt-api-migration): Remove this once all of these handlers are registered directly on the GenericAPIServer
-// by WithMuxHandlers.
-func (app *virtAPIApp) registerLegacyWebhookMux(webhookInformers *webhooks.Informers) {
-	app.registerMutatingWebhook(webhookInformers)
-	app.registerValidatingWebhooks(webhookInformers)
+// LEGACY(virt-api-migration): Remove this once /metrics and /healthz are registered directly on the GenericAPIServer.
+func (app *virtAPIApp) registerLegacyWebhookMux() {
 	http.Handle("/metrics", promhttp.Handler())
 	http.Handle("/healthz", kubevirtHealthzHandler(app.clusterConfig))
 }
@@ -414,12 +488,7 @@ func (app *virtAPIApp) startAggregatedAPIServer(ctx context.Context, webhookInfo
 			},
 			Handler: expand.NewHandler(app.clusterConfig, app.virtCli),
 		}).
-		WithMuxHandlers(apiserver.MuxHandler{
-			Path: components.VMValidatePath,
-			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				validating_webhook.ServeVMs(w, r, app.clusterConfig, app.virtCli, webhookInformers, app.kubeVirtServiceAccounts)
-			}),
-		})
+		WithMuxHandlers(app.webhookMuxHandlers(webhookInformers)...)
 
 	scheme := apiserver.NewScheme()
 
@@ -451,38 +520,6 @@ func legacyBridgePaths() []string {
 	return []string{
 		"/metrics",
 		"/healthz",
-
-		// Mutating webhooks.
-		components.VMMutatePath,
-		components.VMIMutatePath,
-		components.MigrationMutatePath,
-		components.VMCloneCreateMutatePath,
-		components.VirtLauncherPodMutatePath,
-
-		// Validating webhooks.
-		components.VMICreateValidatePath,
-		components.VMIUpdateValidatePath,
-		components.VMIRSValidatePath,
-		components.VMPoolValidatePath,
-		components.VMIPresetValidatePath,
-		components.MigrationCreateValidatePath,
-		components.MigrationUpdateValidatePath,
-		components.VMSnapshotValidatePath,
-		components.VMRestoreValidatePath,
-		components.VMBackupValidatePath,
-		components.VMBackupTrackerValidatePath,
-		components.VMExportValidatePath,
-		components.VMInstancetypeValidatePath,
-		components.VMClusterInstancetypeValidatePath,
-		components.VMPreferenceValidatePath,
-		components.VMClusterPreferenceValidatePath,
-		components.StatusValidatePath,
-		components.PodEvictionValidatePath,
-		components.MigrationPolicyCreateValidatePath,
-		components.VMCloneCreateValidatePath,
-
-		components.KubeVirtUpdateValidatePath,
-		components.KubeVirtCreateValidatePath,
 	}
 }
 
