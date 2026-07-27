@@ -212,18 +212,6 @@ func (app *SubresourceAPIApp) MemoryDumpVMRequestHandler(request *restful.Reques
 	response.WriteHeader(http.StatusAccepted)
 }
 
-func (app *SubresourceAPIApp) RemoveMemoryDumpVMRequestHandler(request *restful.Request, response *restful.Response) {
-	name := request.PathParameter("name")
-	namespace := request.PathParameter("namespace")
-
-	if err := app.RemoveMemoryDump(request.Request.Context(), namespace, name); err != nil {
-		writeError(err, response)
-		return
-	}
-
-	response.WriteHeader(http.StatusAccepted)
-}
-
 func addMemoryDumpRequest(vm, vmCopy *v1.VirtualMachine, memoryDumpReq *v1.VirtualMachineMemoryDumpRequest) error {
 	claimName := memoryDumpReq.ClaimName
 	if vm.Status.MemoryDumpRequest != nil {
