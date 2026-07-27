@@ -17,24 +17,37 @@
  *
  */
 
-package rest
+package virtualmachine
 
 import (
-	"github.com/emicklei/go-restful/v3"
-	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apiserver/pkg/registry/rest"
 
 	v1 "kubevirt.io/api/core/v1"
-	"kubevirt.io/client-go/log"
 )
 
-func (app *SubresourceAPIApp) expandSpecResponse(vm *v1.VirtualMachine, errorFunc func(error) *errors.StatusError, response *restful.Response) {
-	expandedVM, err := app.instancetypeExpander.Expand(vm)
-	if err != nil {
-		writeError(errorFunc(err), response)
-		return
+type DummyREST struct{}
 
-	}
-	if err = response.WriteEntity(expandedVM); err != nil {
-		log.Log.Reason(err).Error("Failed to write http response.")
-	}
+func NewDummyREST() *DummyREST {
+	return &DummyREST{}
+}
+
+var (
+	_ = rest.Storage(&DummyREST{})
+	_ = rest.Scoper(&DummyREST{})
+	_ = rest.SingularNameProvider(&DummyREST{})
+)
+
+func (r *DummyREST) New() runtime.Object {
+	return &v1.VirtualMachine{}
+}
+
+func (r *DummyREST) Destroy() {}
+
+func (r *DummyREST) NamespaceScoped() bool {
+	return true
+}
+
+func (r *DummyREST) GetSingularName() string {
+	return "virtualmachine"
 }

@@ -17,7 +17,7 @@
  *
  */
 
-package virt_api
+package expand
 
 import (
 	"testing"
@@ -25,6 +25,6 @@ import (
 	"kubevirt.io/client-go/testutils"
 )
 
-func TestVirtApi(t *testing.T) {
+func TestExpand(t *testing.T) {
 	testutils.KubeVirtTestSuiteSetup(t)
 }
